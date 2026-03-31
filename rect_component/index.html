@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: transparent; overflow: hidden; }
+  #wrap { position: relative; display: inline-block; }
+  canvas { cursor: crosshair; display: block; border-radius: 4px; }
+  #hud {
+    position: absolute; top: 6px; right: 8px;
+    background: rgba(0,0,0,0.75); color: #0ff; padding: 4px 10px;
+    border-radius: 4px; font: 13px 'Consolas', monospace;
+    pointer-events: none; z-index: 10;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="hud">Drag to draw box</div>
+</div>
+
+<script>
+// ── Streamlit component communication (raw postMessage API) ──
+function sendMsg(type, data) {
+  window.parent.postMessage({ isStreamlitMessage: true, type: type, ...data }, "*");
+}
+function setComponentValue(v) { sendMsg("streamlit:setComponentValue", { value: v }); }
+function setFrameHeight(h) { sendMsg("streamlit:setFrameHeight", { height: h }); }
+function componentReady() { sendMsg("streamlit:componentReady", { apiVersion: 1 }); }
+
+// ── State ──
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+let bgImage = null;
+let W = 800, H = 800;
+let drawing = false;
+let sx = 0, sy = 0, ex = 0, ey = 0;
+let committed = null; // last drawn rect {x1,y1,x2,y2}
+let stenosisBoxes = []; // [{x1,y1,x2,y2,cls}]
+let healthyBox = null;  // {x1,y1,x2,y2}
+
+function redraw() {
+  ctx.clearRect(0, 0, W, H);
+  if (bgImage) ctx.drawImage(bgImage, 0, 0, W, H);
+
+  // Stenosis boxes
+  for (const b of stenosisBoxes) {
+    ctx.strokeStyle = b.cls === 0 ? '#00ff00' : '#ff3232';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+    ctx.font = '12px Consolas, monospace';
+    ctx.fillStyle = b.cls === 0 ? '#00ff00' : '#ff3232';
+    ctx.fillText(b.cls === 0 ? 'stenosis_0' : 'stenosis_1', b.x1 + 2, Math.max(b.y1 - 4, 12));
+  }
+
+  // Existing healthy box (saved)
+  if (healthyBox) {
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.strokeRect(healthyBox.x1, healthyBox.y1,
+                   healthyBox.x2 - healthyBox.x1, healthyBox.y2 - healthyBox.y1);
+    ctx.fillStyle = 'rgba(0,255,255,0.1)';
+    ctx.fillRect(healthyBox.x1, healthyBox.y1,
+                 healthyBox.x2 - healthyBox.x1, healthyBox.y2 - healthyBox.y1);
+    ctx.fillStyle = '#0ff';
+    ctx.font = '12px Consolas, monospace';
+    ctx.fillText('HEALTHY ✓', healthyBox.x1 + 2, Math.max(healthyBox.y1 - 4, 12));
+  }
+
+  // Currently drawing / committed preview
+  const rect = drawing ? { x1: Math.min(sx, ex), y1: Math.min(sy, ey),
+                            x2: Math.max(sx, ex), y2: Math.max(sy, ey) }
+                       : committed;
+  if (rect) {
+    const rw = rect.x2 - rect.x1, rh = rect.y2 - rect.y1;
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 3]);
+    ctx.strokeRect(rect.x1, rect.y1, rw, rh);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(0,255,255,0.15)';
+    ctx.fillRect(rect.x1, rect.y1, rw, rh);
+    // Corner handles
+    const hs = 4;
+    ctx.fillStyle = '#0ff';
+    for (const [hx, hy] of [[rect.x1,rect.y1],[rect.x2,rect.y1],
+                              [rect.x1,rect.y2],[rect.x2,rect.y2]]) {
+      ctx.fillRect(hx - hs, hy - hs, hs*2, hs*2);
+    }
+  }
+}
+
+// ── Mouse events ──
+canvas.addEventListener('mousedown', e => {
+  const r = canvas.getBoundingClientRect();
+  sx = e.clientX - r.left;
+  sy = e.clientY - r.top;
+  ex = sx; ey = sy;
+  drawing = true;
+  committed = null;
+});
+
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  const my = e.clientY - r.top;
+  if (drawing) {
+    ex = mx; ey = my;
+    const w = Math.abs(ex - sx), h = Math.abs(ey - sy);
+    hud.innerHTML = '<span style="color:#0ff">' + w.toFixed(0) + ' × ' + h.toFixed(0) + ' px</span>';
+    redraw();
+  } else {
+    hud.textContent = 'x:' + Math.round(mx) + ' y:' + Math.round(my);
+  }
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (!drawing) return;
+  drawing = false;
+  const r = canvas.getBoundingClientRect();
+  ex = e.clientX - r.left;
+  ey = e.clientY - r.top;
+  const x1 = Math.min(sx, ex), y1 = Math.min(sy, ey);
+  const x2 = Math.max(sx, ex), y2 = Math.max(sy, ey);
+  const w = x2 - x1, h = y2 - y1;
+  if (w > 8 && h > 8) {
+    committed = { x1, y1, x2, y2 };
+    hud.innerHTML = '<span style="color:#0f0">✓ ' + w.toFixed(0) + '×' + h.toFixed(0) + 'px — auto-saving...</span>';
+    redraw();
+    // Send to Streamlit immediately
+    setComponentValue({ x1: x1, y1: y1, x2: x2, y2: y2 });
+  } else {
+    committed = null;
+    hud.textContent = 'Too small — drag again';
+    redraw();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (drawing) { drawing = false; redraw(); }
+});
+
+// ── Receive data from Streamlit ──
+window.addEventListener("message", event => {
+  if (event.data.type !== "streamlit:render") return;
+  const args = event.data.args;
+
+  W = args.width || 800;
+  H = args.height || 800;
+  canvas.width = W;
+  canvas.height = H;
+
+  stenosisBoxes = args.stenosis_boxes || [];
+  healthyBox = args.healthy_box || null;
+  committed = null;
+
+  const imgSrc = args.image_b64;
+  if (imgSrc) {
+    const img = new Image();
+    img.onload = () => { bgImage = img; redraw(); setFrameHeight(H + 4); };
+    img.src = 'data:image/png;base64,' + imgSrc;
+  }
+});
+
+componentReady();
+</script>
+</body>
+</html>

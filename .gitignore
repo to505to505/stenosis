@@ -1,0 +1,6 @@
+*.pt
+data/
+logs/
+.pytest_cache/
+.vscode/
+__pycache__/
