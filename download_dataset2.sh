@@ -13,7 +13,13 @@ fi
 
 mkdir -p "$TARGET_DIR"
 
+# Ensure huggingface_hub is installed
+pip install -q huggingface_hub 2>/dev/null || true
+
 echo "Downloading $REPO_ID to $TARGET_DIR ..."
-huggingface-cli download "$REPO_ID" --repo-type dataset --local-dir "$TARGET_DIR"
+python -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='$REPO_ID', repo_type='dataset', local_dir='$TARGET_DIR')
+"
 
 echo "Done! Dataset saved to $TARGET_DIR"
