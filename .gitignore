@@ -1,5 +1,5 @@
 *.pt
-data/
+/data/
 logs/
 .pytest_cache/
 .vscode/
