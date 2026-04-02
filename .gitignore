@@ -4,6 +4,5 @@ logs/
 .pytest_cache/
 .vscode/
 __pycache__/
-yolo/
 vasomim/
 vit_yolo11/arcade/
