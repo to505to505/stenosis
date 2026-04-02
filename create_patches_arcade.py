@@ -25,7 +25,7 @@ from PIL import Image
 
 
 # ── paths ────────────────────────────────────────────────────────────────────
-BASE = Path("/home/dsa/stenosis/data/stenosis_arcade")
+BASE = Path(__file__).resolve().parent / "data" / "stenosis_arcade"
 OUT  = BASE / "patches"
 
 SPLITS_STENOSIS = ["train", "val", "test"]   # stenosis boxes: all splits
