@@ -1,0 +1,71 @@
+ViT-YOLO11 Best Results
+========================================
+
+Best fitness:  0.00415
+Best epoch:    9
+
+--- Metrics ---
+metrics/mAP50(B)                0.01096
+metrics/mAP50-95(B)             0.00378
+metrics/precision(B)            0.00821
+metrics/recall(B)               0.42686
+val/box_loss                    2.59536
+val/cls_loss                    3.3332
+val/dfl_loss                    2.04127
+
+--- Config ---
+amp                             True
+batch                           16
+bgr                             0.0
+box                             7.5
+close_mosaic                    15
+cls                             0.5
+conf                            None
+copy_paste                      0.0
+cos_lr                          True
+cutmix                          0.0
+data                            data/stenosis_arcade/data.yaml
+degrees                         15.0
+deterministic                   True
+device                          0
+dfl                             1.5
+epochs                          100
+erasing                         0.0
+exist_ok                        False
+fliplr                          0.5
+flipud                          0.5
+freeze                          1
+hsv_h                           0.0
+hsv_s                           0.0
+hsv_v                           0.3
+imgsz                           512
+iou                             0.7
+lr0                             0.001
+lrf                             0.01
+max_det                         100
+mixup                           0.1
+momentum                        0.937
+mosaic                          0.5
+name                            train
+nbs                             64
+optimizer                       AdamW
+patience                        50
+perspective                     0.0
+plots                           True
+project                         /home/dsa/stenosis/vit_yolo11/arcade
+rect                            False
+resume                          False
+save                            True
+save_period                     10
+scale                           0.5
+seed                            42
+shear                           2.0
+single_cls                      False
+split                           val
+translate                       0.1
+val                             True
+warmup_bias_lr                  0.1
+warmup_epochs                   5.0
+warmup_momentum                 0.8
+weight_decay                    0.0005
+workers                         4

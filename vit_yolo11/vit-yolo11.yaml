@@ -1,0 +1,52 @@
+# ViT-Small (VasoMIM) backbone + YOLO11 detection head
+# Stenosis detection — single class, 512×512 grayscale input
+#
+# Architecture:
+#   ViTEncoder (384d, stride 16) → Conv projections to P3/P4/P5
+#   → YOLO11-style PANet neck (C3k2 + Concat + Upsample)
+#   → Anchor-free Detect head (DFL)
+#
+# Channel flow (512×512 input):
+#   Layer 0  ViTEncoder        → (B, 384, 32, 32) stride 16
+#   Layer 1  ConvTranspose     → (B, 256, 64, 64) stride 8   [P3 proj]
+#   Layer 2  Conv 1×1          → (B, 256, 32, 32) stride 16  [P4 proj]
+#   Layer 3  Conv 3×3 s2       → (B, 512, 16, 16) stride 32  [P5 proj]
+#   Layer 4  SPPF              → (B, 512, 16, 16)
+#   Layer 5  C2PSA             → (B, 512, 16, 16)
+#   ...neck...
+#   Layer 11 P3/8  out         → (B, 256, 64, 64)
+#   Layer 14 P4/16 out         → (B, 256, 32, 32)
+#   Layer 17 P5/32 out         → (B, 512, 16, 16)
+#   Layer 18 Detect            → boxes + class scores
+
+nc: 1  # stenosis
+
+# Backbone — ViT-Small encoder + FPN projections
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, ViTEncoder, [384, 512]]          # 0: (B,384,32,32) stride 16
+  - [-1, 1, ConvTranspose, [256, 2, 2, 0]]   # 1: (B,256,64,64) stride 8
+  - [0, 1, Conv, [256, 1, 1]]                # 2: (B,256,32,32) stride 16
+  - [0, 1, Conv, [512, 3, 2]]                # 3: (B,512,16,16) stride 32
+  - [-1, 1, SPPF, [512, 5]]                  # 4: SPPF
+  - [-1, 2, C2PSA, [512]]                    # 5: C2PSA
+
+# Head — YOLO11-style PANet neck + Detect
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 6: upsample P5 → 32×32
+  - [[-1, 2], 1, Concat, [1]]                    # 7: cat P5_up(512) + P4(256) = 768
+  - [-1, 2, C3k2, [256, False]]                  # 8: → 256
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 9: upsample → 64×64
+  - [[-1, 1], 1, Concat, [1]]                    # 10: cat (256) + P3(256) = 512
+  - [-1, 2, C3k2, [256, False]]                  # 11: P3/8 output (256)
+
+  - [-1, 1, Conv, [256, 3, 2]]                   # 12: downsample → 32×32
+  - [[-1, 8], 1, Concat, [1]]                    # 13: cat (256) + layer8(256) = 512
+  - [-1, 2, C3k2, [256, False]]                  # 14: P4/16 output (256)
+
+  - [-1, 1, Conv, [256, 3, 2]]                   # 15: downsample → 16×16
+  - [[-1, 5], 1, Concat, [1]]                    # 16: cat (256) + C2PSA(512) = 768
+  - [-1, 2, C3k2, [512, True]]                   # 17: P5/32 output (512)
+
+  - [[11, 14, 17], 1, Detect, [nc]]              # 18: Detect(P3, P4, P5)

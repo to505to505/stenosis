@@ -1,0 +1,283 @@
+_wandb:
+    value:
+        cli_version: 0.25.1
+        e:
+            86hu54gqfnhca4x35fqdnw6lg301rzre:
+                args:
+                    - --batch
+                    - "16"
+                codePath: vit_yolo11/train.py
+                codePathLocal: vit_yolo11/train.py
+                cpu_count: 16
+                cpu_count_logical: 32
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "960566198272"
+                executable: /home/dsa/miniconda3/envs/stenosis/bin/python
+                git:
+                    commit: 2009300243f7d3c4f9a174708b7eba7f231052ff
+                    remote: https://github.com/to505to505/stenosis.git
+                gpu: NVIDIA GeForce RTX 3060
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      memoryTotal: "12884901888"
+                      name: NVIDIA GeForce RTX 3060
+                      uuid: GPU-c01c1980-4fa3-f37d-55e6-a12179a292e0
+                host: PMI-PC-0358-Stage
+                memory:
+                    total: "24599699456"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: /home/dsa/stenosis/vit_yolo11/train.py
+                python: CPython 3.10.19
+                root: /home/dsa/stenosis/vit_yolo11/arcade/train2
+                startedAt: "2026-04-02T14:49:27.434283Z"
+                writerId: 86hu54gqfnhca4x35fqdnw6lg301rzre
+        m: []
+        python_version: 3.10.19
+        t:
+            "1":
+                - 1
+                - 41
+                - 49
+                - 63
+            "2":
+                - 1
+                - 41
+                - 49
+                - 63
+                - 80
+            "3":
+                - 2
+                - 13
+                - 14
+                - 16
+                - 61
+            "4": 3.10.19
+            "5": 0.25.1
+            "12": 0.25.1
+            "13": linux-x86_64
+agnostic_nms:
+    value: false
+amp:
+    value: true
+angle:
+    value: 1
+architecture:
+    value: ViT-Small + YOLO11
+augment:
+    value: false
+auto_augment:
+    value: randaugment
+backbone:
+    value: VasoMIM ViT-Small (384d, 12 blocks)
+batch:
+    value: 16
+bgr:
+    value: 0
+box:
+    value: 7.5
+cache:
+    value: false
+cfg:
+    value: null
+classes:
+    value: null
+close_mosaic:
+    value: 15
+cls:
+    value: 0.5
+compile:
+    value: false
+conf:
+    value: null
+copy_paste:
+    value: 0
+copy_paste_mode:
+    value: flip
+cos_lr:
+    value: true
+cutmix:
+    value: 0
+data:
+    value: data/stenosis_arcade/data.yaml
+degrees:
+    value: 15
+deterministic:
+    value: true
+device:
+    value: "0"
+dfl:
+    value: 1.5
+dnn:
+    value: false
+dropout:
+    value: 0
+dynamic:
+    value: false
+embed:
+    value: null
+end2end:
+    value: null
+epochs:
+    value: 100
+erasing:
+    value: 0
+exist_ok:
+    value: false
+fliplr:
+    value: 0.5
+flipud:
+    value: 0.5
+format:
+    value: torchscript
+fraction:
+    value: 1
+freeze:
+    value: 1
+half:
+    value: false
+hsv_h:
+    value: 0
+hsv_s:
+    value: 0
+hsv_v:
+    value: 0.3
+imgsz:
+    value: 512
+int8:
+    value: false
+iou:
+    value: 0.7
+keras:
+    value: false
+kobj:
+    value: 1
+line_width:
+    value: null
+lr0:
+    value: 0.001
+lrf:
+    value: 0.01
+mask_ratio:
+    value: 4
+max_det:
+    value: 100
+mixup:
+    value: 0.1
+mode:
+    value: train
+model:
+    value: /home/dsa/stenosis/vit_yolo11/vit-yolo11.yaml
+momentum:
+    value: 0.937
+mosaic:
+    value: 0.5
+multi_scale:
+    value: 0
+name:
+    value: train2
+nbs:
+    value: 64
+nms:
+    value: false
+opset:
+    value: null
+optimize:
+    value: false
+optimizer:
+    value: AdamW
+overlap_mask:
+    value: true
+patience:
+    value: 50
+perspective:
+    value: 0
+plots:
+    value: true
+pose:
+    value: 12
+pretrained:
+    value: true
+profile:
+    value: false
+project:
+    value: /home/dsa/stenosis/vit_yolo11/arcade
+rect:
+    value: false
+resume:
+    value: false
+retina_masks:
+    value: false
+rle:
+    value: 1
+save:
+    value: true
+save_conf:
+    value: false
+save_crop:
+    value: false
+save_dir:
+    value: /home/dsa/stenosis/vit_yolo11/arcade/train2
+save_frames:
+    value: false
+save_json:
+    value: false
+save_period:
+    value: 10
+save_txt:
+    value: false
+scale:
+    value: 0.5
+seed:
+    value: 42
+shear:
+    value: 2
+show:
+    value: false
+show_boxes:
+    value: true
+show_conf:
+    value: true
+show_labels:
+    value: true
+simplify:
+    value: true
+single_cls:
+    value: false
+source:
+    value: null
+split:
+    value: val
+stream_buffer:
+    value: false
+task:
+    value: detect
+time:
+    value: null
+tracker:
+    value: botsort.yaml
+translate:
+    value: 0.1
+val:
+    value: true
+verbose:
+    value: true
+vid_stride:
+    value: 1
+visualize:
+    value: false
+warmup_bias_lr:
+    value: 0.1
+warmup_epochs:
+    value: 5
+warmup_momentum:
+    value: 0.8
+weight_decay:
+    value: 0.0005
+workers:
+    value: 4
+workspace:
+    value: null
