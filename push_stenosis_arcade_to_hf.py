@@ -3,7 +3,7 @@
 from huggingface_hub import HfApi
 
 REPO_ID = "to505to505/stenosis_arcade"
-LOCAL_DIR = "/home/dsa/stenosis/data/stenosis_arcade"
+LOCAL_DIR = "/data/stenosis_arcade"
 
 api = HfApi()
 
