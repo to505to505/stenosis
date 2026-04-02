@@ -1,0 +1,52 @@
+# ViT-Small (VasoMIM) backbone + GELAN (YOLOv9) detection neck
+# Stenosis detection — single class, 512×512 grayscale input
+#
+# Architecture:
+#   ViTEncoder (384d, stride 16) → Conv projections to P3/P4/P5 (512ch)
+#   → GELAN-style PANet neck (RepNCSPELAN4 + ADown + SPPELAN)
+#   → Anchor-free Detect head (DFL)
+#
+# Channel flow (512×512 input):
+#   Layer 0  ViTEncoder          → (B, 384, 32, 32) stride 16
+#   Layer 1  ConvTranspose       → (B, 512, 64, 64) stride 8   [P3 proj]
+#   Layer 2  Conv 1×1            → (B, 512, 32, 32) stride 16  [P4 proj]
+#   Layer 3  Conv 3×3 s2         → (B, 512, 16, 16) stride 32  [P5 proj]
+#   Layer 4  SPPELAN             → (B, 512, 16, 16)
+#   ...GELAN neck...
+#   Layer 10 P3/8  out           → (B, 256, 64, 64)
+#   Layer 13 P4/16 out           → (B, 512, 32, 32)
+#   Layer 16 P5/32 out           → (B, 512, 16, 16)
+#   Layer 17 Detect              → boxes + class scores
+
+nc: 1  # stenosis
+
+# Backbone — ViT-Small encoder + FPN projections (512ch)
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, ViTEncoder, [384, 512]]          # 0: (B,384,32,32) stride 16
+  - [-1, 1, ConvTranspose, [512, 2, 2, 0]]   # 1: (B,512,64,64) stride 8  [P3]
+  - [0, 1, Conv, [512, 1, 1]]                # 2: (B,512,32,32) stride 16 [P4]
+  - [0, 1, Conv, [512, 3, 2]]                # 3: (B,512,16,16) stride 32 [P5]
+  - [-1, 1, SPPELAN, [512, 256]]             # 4: SPPELAN
+
+# Head — GELAN-style PANet neck (YOLOv9) + Detect
+head:
+  # --- top-down path ---
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 5: upsample P5 → 32×32
+  - [[-1, 2], 1, Concat, [1]]                    # 6: cat (512) + P4(512) = 1024
+  - [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]]    # 7: → 512
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]  # 8: upsample → 64×64
+  - [[-1, 1], 1, Concat, [1]]                    # 9: cat (512) + P3(512) = 1024
+  - [-1, 1, RepNCSPELAN4, [256, 256, 128, 1]]    # 10: P3/8 output (256)
+
+  # --- bottom-up path ---
+  - [-1, 1, ADown, [256]]                        # 11: downsample → 32×32
+  - [[-1, 7], 1, Concat, [1]]                    # 12: cat (256) + layer7(512) = 768
+  - [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]]    # 13: P4/16 output (512)
+
+  - [-1, 1, ADown, [512]]                        # 14: downsample → 16×16
+  - [[-1, 4], 1, Concat, [1]]                    # 15: cat (512) + SPPELAN(512) = 1024
+  - [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]]    # 16: P5/32 output (512)
+
+  - [[10, 13, 16], 1, Detect, [nc]]              # 17: Detect(P3, P4, P5)

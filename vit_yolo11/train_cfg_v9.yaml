@@ -1,0 +1,87 @@
+# ViT-YOLOv9 Stenosis Training Configuration
+# ============================================
+# GELAN (YOLOv9) neck variant — stronger feature fusion
+# Override any parameter here — passed to model.train(**cfg)
+
+# ── Model & Data ──────────────────────────────────────────────────────────────
+task: detect
+model: vit_yolo11/vit-yolov9.yaml
+data: data/stenosis_arcade/data.yaml
+
+# ── Training ──────────────────────────────────────────────────────────────────
+epochs: 100
+patience: 50           # early stopping after N epochs without improvement
+batch: 4
+imgsz: 512
+device: 0
+workers: 4
+seed: 42
+deterministic: True
+amp: True              # mixed precision
+single_cls: False
+rect: False            # square batches (not rectangular)
+cos_lr: True           # cosine LR schedule (recommended for ViT)
+close_mosaic: 15       # disable mosaic for last 15 epochs
+resume: False
+freeze: 1              # freeze layer 0 (ViTEncoder) — set to null to train all
+
+# ── Optimizer ─────────────────────────────────────────────────────────────────
+optimizer: AdamW       # AdamW works best with ViT
+lr0: 0.001             # initial learning rate
+lrf: 0.01              # final LR = lr0 * lrf = 1e-5
+momentum: 0.937
+weight_decay: 0.0005
+warmup_epochs: 5.0     # longer warmup for ViT
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+nbs: 64                # nominal batch size for loss normalization
+
+# ── Loss weights ──────────────────────────────────────────────────────────────
+box: 7.5               # box regression loss gain
+cls: 0.5               # classification loss gain
+dfl: 1.5               # distribution focal loss gain
+
+# ── Validation ────────────────────────────────────────────────────────────────
+val: True              # validate every epoch
+split: val
+plots: True            # save PR/F1 curves
+conf:                  # confidence threshold (default: 0.001 for val)
+iou: 0.7               # NMS IoU threshold
+max_det: 100
+
+# ── Augmentations ─────────────────────────────────────────────────────────────
+# For grayscale angiography, HSV and color augmentations have limited effect.
+# Focus on geometric augmentations that simulate real variation.
+
+# Color / brightness (low for grayscale)
+hsv_h: 0.0             # hue — disabled (grayscale)
+hsv_s: 0.0             # saturation — disabled (grayscale)
+hsv_v: 0.3             # brightness variation
+
+# Geometric
+degrees: 15.0          # rotation ±10°
+translate: 0.1         # translation ±10%
+scale: 0.5             # scale ±50%
+shear: 2.0             # shear ±2°
+perspective: 0.0       # perspective (0 = disabled)
+
+# Flips
+flipud: 0.5            # vertical flip
+fliplr: 0.5            # horizontal flip
+
+# Mosaic / MixUp
+mosaic: 0.5           # mosaic probability
+mixup: 0.1             # MixUp probability (light)
+cutmix: 0.0            # CutMix — disabled
+copy_paste: 0.0        # copy-paste — disabled
+
+# Misc
+bgr: 0.0               # BGR swap — disabled
+erasing: 0.0           # random erasing — disabled
+
+# ── Saving ────────────────────────────────────────────────────────────────────
+project: vit_yolo11/arcade_v9
+name: train
+save: True
+save_period: 10        # save checkpoint every N epochs (-1 = only best/last)
+exist_ok: False

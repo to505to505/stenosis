@@ -21,6 +21,7 @@ from ultralytics.nn.modules.vit_encoder import ViTEncoder
 from ultralytics.nn.modules import ViTEncoder as ViTEncoderImported
 
 YAML_PATH = str(ROOT / "vit-yolo11.yaml")
+YAML_V9_PATH = str(ROOT / "vit-yolov9.yaml")
 WEIGHTS_PATH = REPO / "vasomim" / "weights" / "vit_small_encoder_512.pth"
 DATA_YAML = REPO / "data" / "dataset2_split_90_10" / "data.yaml"
 
@@ -606,3 +607,264 @@ class TestDataIntegration:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
+
+
+# =====================================================================
+# 11. ViT-YOLOv9 (GELAN neck) — Model build tests
+# =====================================================================
+
+class TestV9ModelBuild:
+    """Test that the vit-yolov9.yaml config produces a valid detection model."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        return YOLO(YAML_V9_PATH)
+
+    def test_model_builds(self, model):
+        """Model builds from YAML without errors."""
+        assert model is not None
+        assert model.model is not None
+
+    def test_num_layers(self, model):
+        """YAML defines 18 layers (0..17)."""
+        assert len(model.model.model) == 18
+
+    def test_layer0_is_vit(self, model):
+        """Layer 0 is ViTEncoder."""
+        assert isinstance(model.model.model[0], ViTEncoder)
+
+    def test_last_layer_is_detect(self, model):
+        """Last layer is Detect head."""
+        from ultralytics.nn.modules.head import Detect
+        assert isinstance(model.model.model[-1], Detect)
+
+    def test_strides(self, model):
+        """Detect strides are [8, 16, 32]."""
+        strides = model.model.stride.tolist()
+        assert strides == [8.0, 16.0, 32.0]
+
+    def test_nc(self, model):
+        """Number of classes is 1 (stenosis)."""
+        detect = model.model.model[-1]
+        assert detect.nc == 1
+
+    def test_detect_nl(self, model):
+        """Detect head has 3 output levels."""
+        detect = model.model.model[-1]
+        assert detect.nl == 3
+
+    def test_detect_channels(self, model):
+        """Detect head input channels: [256, 512, 512]."""
+        detect = model.model.model[-1]
+        chs = [detect.cv2[i][0].conv.in_channels for i in range(detect.nl)]
+        assert chs == [256, 512, 512]
+
+
+# =====================================================================
+# 12. ViT-YOLOv9 — Forward pass tests
+# =====================================================================
+
+class TestV9ForwardPass:
+    """Test forward pass through the vit-yolov9 model."""
+
+    @pytest.fixture(scope="class")
+    def model(self):
+        m = YOLO(YAML_V9_PATH)
+        m.model.eval()
+        return m
+
+    def test_inference_512(self, model):
+        """512×512 inference produces valid output."""
+        x = torch.zeros(1, 3, 512, 512)
+        with torch.no_grad():
+            out = model.model(x)
+        assert isinstance(out, tuple)
+        assert len(out) == 2
+
+    def test_inference_output_tensor(self, model):
+        """First output is the decoded predictions tensor."""
+        x = torch.zeros(1, 3, 512, 512)
+        with torch.no_grad():
+            preds, extra = model.model(x)
+        assert isinstance(preds, torch.Tensor)
+        assert preds.ndim == 3
+        assert preds.shape[0] == 1
+        assert preds.shape[1] == 5  # 4 box + 1 class
+
+    def test_inference_num_anchors(self, model):
+        """Number of anchors for 512×512: 64² + 32² + 16² = 5376."""
+        x = torch.zeros(1, 3, 512, 512)
+        with torch.no_grad():
+            preds, _ = model.model(x)
+        assert preds.shape[2] == 5376
+
+    def test_feats_shapes(self, model):
+        """Feature maps have expected spatial sizes for 512×512 input."""
+        x = torch.zeros(1, 3, 512, 512)
+        with torch.no_grad():
+            _, extra = model.model(x)
+        feats = extra["feats"]
+        assert len(feats) == 3
+        assert feats[0].shape == (1, 256, 64, 64)   # P3/8
+        assert feats[1].shape == (1, 512, 32, 32)   # P4/16
+        assert feats[2].shape == (1, 512, 16, 16)   # P5/32
+
+    def test_inference_output_finite(self, model):
+        """Output contains no NaN/Inf."""
+        x = torch.randn(1, 3, 512, 512)
+        with torch.no_grad():
+            preds, _ = model.model(x)
+        assert torch.isfinite(preds).all()
+
+    def test_inference_batch_2(self, model):
+        """Batch size 2 works correctly."""
+        x = torch.zeros(2, 3, 512, 512)
+        with torch.no_grad():
+            preds, _ = model.model(x)
+        assert preds.shape[0] == 2
+
+    def test_different_input_resolution(self, model):
+        """Model handles 640×640 input."""
+        x = torch.zeros(1, 3, 640, 640)
+        with torch.no_grad():
+            preds, extra = model.model(x)
+        feats = extra["feats"]
+        assert feats[0].shape == (1, 256, 80, 80)   # P3/8
+        assert feats[1].shape == (1, 512, 40, 40)   # P4/16
+        assert feats[2].shape == (1, 512, 20, 20)   # P5/32
+
+
+# =====================================================================
+# 13. ViT-YOLOv9 — Layer shape tests
+# =====================================================================
+
+class TestV9LayerShapes:
+    """Verify intermediate feature map shapes for vit-yolov9."""
+
+    @pytest.fixture(scope="class")
+    def layer_outputs(self):
+        model = YOLO(YAML_V9_PATH)
+        model.model.eval()
+        x = torch.zeros(1, 3, 512, 512)
+
+        outputs = {}
+        hooks = []
+
+        def make_hook(idx):
+            def hook_fn(module, input, output):
+                if isinstance(output, torch.Tensor):
+                    outputs[idx] = output.shape
+            return hook_fn
+
+        for i, layer in enumerate(model.model.model):
+            hooks.append(layer.register_forward_hook(make_hook(i)))
+
+        with torch.no_grad():
+            model.model(x)
+
+        for h in hooks:
+            h.remove()
+
+        return outputs
+
+    def test_layer0_vit(self, layer_outputs):
+        """Layer 0 (ViTEncoder): (1, 384, 32, 32)."""
+        assert layer_outputs[0] == (1, 384, 32, 32)
+
+    def test_layer1_convtranspose_p3(self, layer_outputs):
+        """Layer 1 (ConvTranspose P3): (1, 512, 64, 64)."""
+        assert layer_outputs[1] == (1, 512, 64, 64)
+
+    def test_layer2_conv_p4(self, layer_outputs):
+        """Layer 2 (Conv 1×1 P4): (1, 512, 32, 32)."""
+        assert layer_outputs[2] == (1, 512, 32, 32)
+
+    def test_layer3_conv_p5(self, layer_outputs):
+        """Layer 3 (Conv 3×3 s2 P5): (1, 512, 16, 16)."""
+        assert layer_outputs[3] == (1, 512, 16, 16)
+
+    def test_layer4_sppelan(self, layer_outputs):
+        """Layer 4 (SPPELAN): (1, 512, 16, 16)."""
+        assert layer_outputs[4] == (1, 512, 16, 16)
+
+    def test_layer7_repncspelan4(self, layer_outputs):
+        """Layer 7 (RepNCSPELAN4 top-down P4): (1, 512, 32, 32)."""
+        assert layer_outputs[7] == (1, 512, 32, 32)
+
+    def test_layer10_p3_out(self, layer_outputs):
+        """Layer 10 (P3/8 output): (1, 256, 64, 64)."""
+        assert layer_outputs[10] == (1, 256, 64, 64)
+
+    def test_layer13_p4_out(self, layer_outputs):
+        """Layer 13 (P4/16 output): (1, 512, 32, 32)."""
+        assert layer_outputs[13] == (1, 512, 32, 32)
+
+    def test_layer16_p5_out(self, layer_outputs):
+        """Layer 16 (P5/32 output): (1, 512, 16, 16)."""
+        assert layer_outputs[16] == (1, 512, 16, 16)
+
+
+# =====================================================================
+# 14. ViT-YOLOv9 — Training mode and properties tests
+# =====================================================================
+
+class TestV9Properties:
+    """Model properties for vit-yolov9."""
+
+    def test_total_param_count(self):
+        """Total params in expected range (~22M ViT + ~18M GELAN neck)."""
+        model = YOLO(YAML_V9_PATH)
+        total = sum(p.numel() for p in model.model.parameters())
+        assert 35_000_000 < total < 50_000_000, f"Expected ~40M, got {total:,}"
+
+    def test_train_mode_returns_feats(self):
+        """In training mode, forward returns feature list for loss computation."""
+        model = YOLO(YAML_V9_PATH)
+        model.model.train()
+        x = torch.randn(2, 3, 512, 512)
+        out = model.model(x)
+        assert isinstance(out, (list, dict))
+
+    def test_gradient_flows_through_full_model(self):
+        """Gradients flow from loss back through entire model."""
+        model = YOLO(YAML_V9_PATH)
+        model.model.train()
+        x = torch.randn(1, 3, 512, 512, requires_grad=True)
+        out = model.model(x)
+        if isinstance(out, dict):
+            feats = out.get("feats", out.get("one2many", []))
+        elif isinstance(out, list):
+            feats = out
+        else:
+            feats = [out]
+        loss = sum(f.sum() for f in feats if isinstance(f, torch.Tensor))
+        loss.backward()
+        assert x.grad is not None
+
+
+# =====================================================================
+# 15. ViT-YOLOv9 — CUDA tests
+# =====================================================================
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+class TestV9CUDA:
+    """GPU-specific tests for vit-yolov9."""
+
+    def test_cuda_forward_pass(self):
+        """Forward pass on GPU produces valid output."""
+        model = YOLO(YAML_V9_PATH)
+        model.model.cuda().eval()
+        x = torch.zeros(1, 3, 512, 512, device="cuda")
+        with torch.no_grad():
+            preds, extra = model.model(x)
+        assert preds.is_cuda
+        assert torch.isfinite(preds).all()
+
+    def test_cuda_amp_forward(self):
+        """Forward pass works with automatic mixed precision."""
+        model = YOLO(YAML_V9_PATH)
+        model.model.cuda().eval()
+        x = torch.zeros(1, 3, 512, 512, device="cuda")
+        with torch.no_grad(), torch.amp.autocast("cuda"):
+            preds, _ = model.model(x)
+        assert torch.isfinite(preds).all()
