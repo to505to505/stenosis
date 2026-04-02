@@ -127,55 +127,55 @@ def main():
         results = model.train(**train_cfg)
     except KeyboardInterrupt:
         print("\n[INFO] Training interrupted by user")
-    finally:
-        # ── Post-training: save best.txt, train.csv, verify checkpoints ──
-        if not hasattr(model, "trainer") or model.trainer is None:
-            return
-        save_dir = Path(model.trainer.save_dir)
 
-        # Log extra config to the active wandb run
-        if wandb.run:
-            wandb.config.update({
-                "architecture": "ViT-Small + YOLOv9 (GELAN neck)",
-                "backbone": "VasoMIM ViT-Small (384d, 12 blocks)",
-                "neck": "GELAN (RepNCSPELAN4 + ADown + SPPELAN)",
-                "pretrained": not args.no_pretrained,
-            }, allow_val_change=True)
-            wandb.finish()
+    # ── Post-training: save best.txt, train.csv, verify checkpoints ──
+    if not hasattr(model, "trainer") or model.trainer is None:
+        return
+    save_dir = Path(model.trainer.save_dir)
 
-        # 1. Copy results.csv → train.csv (full epoch-by-epoch history)
-        results_csv = save_dir / "results.csv"
-        train_csv = save_dir / "train.csv"
-        if results_csv.exists():
-            shutil.copy2(results_csv, train_csv)
-            print(f"[INFO] Training history saved to {train_csv}")
+    # Log extra config to the active wandb run
+    if wandb.run:
+        wandb.config.update({
+            "architecture": "ViT-Small + YOLOv9 (GELAN neck)",
+            "backbone": "VasoMIM ViT-Small (384d, 12 blocks)",
+            "neck": "GELAN (RepNCSPELAN4 + ADown + SPPELAN)",
+            "pretrained": not args.no_pretrained,
+        }, allow_val_change=True)
+        wandb.finish()
 
-        # 2. Write best.txt with best metrics
-        best_txt = save_dir / "best.txt"
-        metrics = model.trainer.metrics or {}
-        best_fitness = model.trainer.best_fitness
-        best_epoch = getattr(model.trainer.stopper, "best_epoch", "N/A")
-        with open(best_txt, "w") as f:
-            f.write("ViT-YOLOv9 Best Results\n")
-            f.write("=" * 40 + "\n\n")
-            f.write(f"Best fitness:  {best_fitness}\n")
-            if best_epoch != "N/A":
-                f.write(f"Best epoch:    {best_epoch}\n")
-            f.write("\n--- Metrics ---\n")
-            for k, v in sorted(metrics.items()):
-                f.write(f"{k:30s}  {v}\n")
-            f.write("\n--- Config ---\n")
-            for k, v in sorted(train_cfg.items()):
-                f.write(f"{k:30s}  {v}\n")
-        print(f"[INFO] Best metrics saved to {best_txt}")
+    # 1. Copy results.csv → train.csv (full epoch-by-epoch history)
+    results_csv = save_dir / "results.csv"
+    train_csv = save_dir / "train.csv"
+    if results_csv.exists():
+        shutil.copy2(results_csv, train_csv)
+        print(f"[INFO] Training history saved to {train_csv}")
 
-        # 3. List saved checkpoints
-        wdir = save_dir / "weights"
-        if wdir.exists():
-            ckpts = sorted(wdir.glob("*.pt"))
-            print(f"[INFO] Checkpoints ({len(ckpts)}): {[c.name for c in ckpts]}")
+    # 2. Write best.txt with best metrics
+    best_txt = save_dir / "best.txt"
+    metrics = model.trainer.metrics or {}
+    best_fitness = model.trainer.best_fitness
+    best_epoch = getattr(model.trainer.stopper, "best_epoch", "N/A")
+    with open(best_txt, "w") as f:
+        f.write("ViT-YOLOv9 Best Results\n")
+        f.write("=" * 40 + "\n\n")
+        f.write(f"Best fitness:  {best_fitness}\n")
+        if best_epoch != "N/A":
+            f.write(f"Best epoch:    {best_epoch}\n")
+        f.write("\n--- Metrics ---\n")
+        for k, v in sorted(metrics.items()):
+            f.write(f"{k:30s}  {v}\n")
+        f.write("\n--- Config ---\n")
+        for k, v in sorted(train_cfg.items()):
+            f.write(f"{k:30s}  {v}\n")
+    print(f"[INFO] Best metrics saved to {best_txt}")
 
-        print(f"[INFO] All results saved to {save_dir}")
+    # 3. List saved checkpoints
+    wdir = save_dir / "weights"
+    if wdir.exists():
+        ckpts = sorted(wdir.glob("*.pt"))
+        print(f"[INFO] Checkpoints ({len(ckpts)}): {[c.name for c in ckpts]}")
+
+    print(f"[INFO] All results saved to {save_dir}")
 
 
 if __name__ == "__main__":
