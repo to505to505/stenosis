@@ -7,8 +7,8 @@ from pathlib import Path
 @dataclass
 class Config:
     # ── Paths ──────────────────────────────────────────────────────────
-    data_root: Path = Path("/home/dsa/stenosis/data/dataset2_split")
-    output_dir: Path = Path("/home/dsa/stenosis/stenosis_temporal/runs")
+    data_root: Path = Path("/workspace/stenosis/data/dataset2_split")
+    output_dir: Path = Path("/workspace/stenosis/stenosis_temporal/runs")
 
     # ── Image ──────────────────────────────────────────────────────────
     img_h: int = 512
