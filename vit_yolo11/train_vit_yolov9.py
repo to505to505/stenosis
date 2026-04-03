@@ -121,10 +121,14 @@ def main():
             n_unfrozen = sum(p.numel() for p in vit_encoder.parameters())
             print(f"\n[INFO] Epoch {UNFREEZE_EPOCH}: Unfroze ViTEncoder ({n_unfrozen/1e6:.1f}M params, lr={trainer.args.lr0 * 0.1})")
 
-    model.add_callback("on_train_epoch_start", unfreeze_vit_callback)
-
-    # Keep freeze=1 so ViT starts frozen
-    train_cfg.setdefault("freeze", 1)
+    # If using pretrained weights, freeze ViT for first N epochs then unfreeze;
+    # without pretrained weights, train everything from the start.
+    if not args.no_pretrained:
+        model.add_callback("on_train_epoch_start", unfreeze_vit_callback)
+        train_cfg.setdefault("freeze", 1)
+    else:
+        train_cfg["freeze"] = 0
+        print("[INFO] No pretrained weights → ViT backbone NOT frozen (freeze=0)")
 
     # Set wandb project name (Ultralytics callback will call wandb.init with dir=save_dir)
     os.environ["WANDB_PROJECT"] = args.wandb_project
