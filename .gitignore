@@ -1,4 +1,5 @@
 *.pt
+*.pth
 /data/
 logs/
 .pytest_cache/

@@ -10,9 +10,10 @@ timm
 polars
 wandb
 
-# ViTDet (mmdetection-based)
-cython
-pycocotools
-six
-terminaltables
-mmcv-full>=1.3.8,<=1.4.0
+# RF-DETR training dependencies
+rfdetr>=1.6.0
+pytorch_lightning>=2.0
+pandas>=2.0
+rich>=13.0
+albumentations>=2.0
+
