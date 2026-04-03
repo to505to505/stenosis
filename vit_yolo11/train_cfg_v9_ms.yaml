@@ -11,7 +11,7 @@ data: data/stenosis_arcade/data.yaml
 # ── Training ──────────────────────────────────────────────────────────────────
 epochs: 100
 patience: 50           # early stopping after N epochs without improvement
-batch: 4
+batch: 16
 imgsz: 512
 device: 0
 workers: 4
