@@ -4,7 +4,8 @@ logs/
 .pytest_cache/
 .vscode/
 __pycache__/
-vasomim/
+vasomim/runs/
+vasomim/weights/*.pt
 vit_yolo11/arcade/
 !yolo/yolov9/data/
 !yolo/yolov9/data/**
