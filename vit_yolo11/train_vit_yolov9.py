@@ -49,16 +49,29 @@ def load_pretrained_vit(trainer, weights_path: Path) -> None:
     """
     vit_encoder = trainer.model.model[0]  # layer 0 = ViTEncoder
     state = torch.load(str(weights_path), map_location="cpu", weights_only=True)
+
+    # Snapshot a weight BEFORE loading to prove weights actually changed
+    probe_key = "blocks.0.attn.qkv.weight"
+    w_before = vit_encoder.vit.state_dict()[probe_key].clone().cpu()
+
     msg = vit_encoder.vit.load_state_dict(state, strict=False)
+
+    w_after = vit_encoder.vit.state_dict()[probe_key].clone().cpu()
+    w_target = state[probe_key]
+
     print(f"[ViTEncoder] Loaded pretrained weights from {weights_path}")
     print(f"  missing : {msg.missing_keys}")
     print(f"  unexpected: {msg.unexpected_keys}")
+    print(f"  VERIFY: {probe_key}")
+    print(f"    before_std={w_before.std():.6f}  after_std={w_after.std():.6f}  target_std={w_target.std():.6f}")
+    print(f"    weights_changed={not torch.equal(w_before, w_after)}  matches_pretrained={torch.equal(w_after, w_target)}")
 
     # Also load into EMA model so exponential moving average starts from pretrained
     if hasattr(trainer, "ema") and trainer.ema is not None:
         ema_vit = trainer.ema.ema.model[0]
         ema_vit.vit.load_state_dict(state, strict=False)
-        print("[ViTEncoder] Also loaded pretrained weights into EMA model")
+        w_ema = ema_vit.vit.state_dict()[probe_key].clone().cpu()
+        print(f"  EMA: matches_pretrained={torch.equal(w_ema, w_target)}")
 
 
 def main():
