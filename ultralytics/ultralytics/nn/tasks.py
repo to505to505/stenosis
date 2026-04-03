@@ -68,6 +68,8 @@ from ultralytics.nn.modules import (
     Segment26,
     TorchVision,
     ViTEncoder,
+    ViTMultiScale,
+    ViTMultiScaleTap,
     WorldDetect,
     YOLOEDetect,
     YOLOESegment,
@@ -1610,6 +1612,8 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             A2C2f,
             ViTEncoder,
+            ViTMultiScale,
+            ViTMultiScaleTap,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1723,6 +1727,15 @@ def parse_model(d, ch, verbose=True):
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         m_.np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type = i, f, t  # attach index, 'from' index, type
+
+        # Link ViTMultiScaleTap to its parent ViTMultiScale module
+        if m is ViTMultiScaleTap:
+            src_idx = f if isinstance(f, int) else f[0]
+            src_layer = layers[src_idx]
+            assert isinstance(src_layer, ViTMultiScale), \
+                f"ViTMultiScaleTap 'from' must point to a ViTMultiScale layer, got {type(src_layer)}"
+            m_._vit_ms = src_layer
+
         if verbose:
             LOGGER.info(f"{i:>3}{f!s:>20}{n_:>3}{m_.np:10.0f}  {t:<45}{args!s:<30}")  # print
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist

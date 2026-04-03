@@ -36,6 +36,7 @@ settings.update(wandb=True)
 
 WEIGHTS_PATH = ROOT.parent / "vasomim" / "weights" / "vit_small_encoder_512.pth"
 YAML_PATH = ROOT / "vit-yolov9.yaml"
+YAML_PATH_MS = ROOT / "vit-yolov9-ms.yaml"
 DEFAULT_CFG = ROOT / "train_cfg_v9.yaml"
 
 
@@ -55,6 +56,8 @@ def main():
                         help="Path to training config YAML (augmentations, optimizer, etc.)")
     parser.add_argument("--no-pretrained", action="store_true",
                         help="Skip loading VasoMIM pretrained weights")
+    parser.add_argument("--multi-scale", action="store_true",
+                        help="Use multi-scale ViT (features from blocks 3,7,11)")
     parser.add_argument("--wandb-project", type=str, default="vit-yolov9-stenosis",
                         help="W&B project name")
     # Quick overrides (take precedence over config file)
@@ -79,7 +82,8 @@ def main():
             train_cfg[key] = val
 
     # Build model from YAML
-    model = YOLO(str(YAML_PATH))
+    yaml_path = YAML_PATH_MS if args.multi_scale else YAML_PATH
+    model = YOLO(str(yaml_path))
 
     # Load pretrained ViT encoder weights
     if not args.no_pretrained and WEIGHTS_PATH.exists():

@@ -93,7 +93,7 @@ from .head import (
     YOLOESegment26,
     v10Detect,
 )
-from .vit_encoder import ViTEncoder
+from .vit_encoder import ViTEncoder, ViTMultiScale, ViTMultiScaleTap
 from .transformer import (
     AIFI,
     MLP,
@@ -189,4 +189,6 @@ __all__ = (
     "YOLOESegment26",
     "v10Detect",
     "ViTEncoder",
+    "ViTMultiScale",
+    "ViTMultiScaleTap",
 )

@@ -1,0 +1,62 @@
+# ViT-Small (VasoMIM) multi-scale backbone + GELAN (YOLOv9) detection neck
+# Stenosis detection — single class, 512×512 grayscale input
+#
+# Multi-scale Architecture:
+#   ViTMultiScale extracts features from blocks 3, 7, 11 (early/mid/late).
+#   Each tap is projected to P3/P4/P5 via dedicated Conv layers:
+#     - Block 3 (early)  → ConvTranspose ×2 → P3 stride 8  (fine detail)
+#     - Block 7 (mid)    → Conv 1×1        → P4 stride 16  (mid-level)
+#     - Block 11 (late)  → Conv 3×3 s2     → P5 stride 32  (semantic)
+#   → GELAN-style PANet neck (RepNCSPELAN4 + ADown + SPPELAN)
+#   → Anchor-free Detect head (DFL)
+#
+# Channel flow (512×512 input):
+#   Layer 0  ViTMultiScale       → caches 3 feature maps (384ch, 32×32 each)
+#   Layer 1  Tap(0) block 3      → (B, 384, 32, 32) early features
+#   Layer 2  Tap(1) block 7      → (B, 384, 32, 32) mid features
+#   Layer 3  Tap(2) block 11     → (B, 384, 32, 32) late features
+#   Layer 4  ConvTranspose       → (B, 256, 64, 64) stride 8   [P3 from early]
+#   Layer 5  Conv 1×1            → (B, 512, 32, 32) stride 16  [P4 from mid]
+#   Layer 6  Conv 3×3 s2         → (B, 512, 16, 16) stride 32  [P5 from late]
+#   Layer 7  SPPELAN             → (B, 512, 16, 16)
+#   ...GELAN neck...
+#   Layer 13 P3/8  out           → (B, 256, 64, 64)
+#   Layer 16 P4/16 out           → (B, 512, 32, 32)
+#   Layer 19 P5/32 out           → (B, 512, 16, 16)
+#   Layer 20 Detect              → boxes + class scores
+
+nc: 1  # stenosis
+
+# Backbone — ViTMultiScale + per-tap projections
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, ViTMultiScale, [384, 512]]           # 0: run ViT, cache 3 taps
+  - [0, 1, ViTMultiScaleTap, [384, 0]]           # 1: early (block 3) 384ch
+  - [0, 1, ViTMultiScaleTap, [384, 1]]           # 2: mid   (block 7) 384ch
+  - [0, 1, ViTMultiScaleTap, [384, 2]]           # 3: late  (block 11) 384ch
+  - [1, 1, ConvTranspose, [256, 2, 2, 0]]        # 4: early → (B,256,64,64) stride 8  [P3]
+  - [2, 1, Conv, [512, 1, 1]]                    # 5: mid   → (B,512,32,32) stride 16 [P4]
+  - [3, 1, Conv, [512, 3, 2]]                    # 6: late  → (B,512,16,16) stride 32 [P5]
+  - [-1, 1, SPPELAN, [512, 256]]                 # 7: SPPELAN on P5
+
+# Head — GELAN-style PANet neck (YOLOv9) + Detect
+head:
+  # --- top-down path ---
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 8: upsample P5 → 32×32
+  - [[-1, 5], 1, Concat, [1]]                     # 9: cat (512) + P4(512) = 1024
+  - [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]]     # 10: → 512
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 11: upsample → 64×64
+  - [[-1, 4], 1, Concat, [1]]                     # 12: cat (512) + P3(256) = 768
+  - [-1, 1, RepNCSPELAN4, [256, 256, 128, 1]]     # 13: P3/8 output (256)
+
+  # --- bottom-up path ---
+  - [-1, 1, ADown, [256]]                         # 14: downsample → 32×32
+  - [[-1, 10], 1, Concat, [1]]                    # 15: cat (256) + layer10(512) = 768
+  - [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]]     # 16: P4/16 output (512)
+
+  - [-1, 1, ADown, [512]]                         # 17: downsample → 16×16
+  - [[-1, 7], 1, Concat, [1]]                     # 18: cat (512) + SPPELAN(512) = 1024
+  - [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]]     # 19: P5/32 output (512)
+
+  - [[13, 16, 19], 1, Detect, [nc]]               # 20: Detect(P3, P4, P5)
