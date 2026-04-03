@@ -56,6 +56,8 @@ def main():
                         help="Path to training config YAML (augmentations, optimizer, etc.)")
     parser.add_argument("--no-pretrained", action="store_true",
                         help="Skip loading VasoMIM pretrained weights")
+    parser.add_argument("--weights", type=str, default=None,
+                        help="Path to pretrained ViT weights (default: vasomim/weights/vit_small_encoder_512.pth)")
     parser.add_argument("--multi-scale", action="store_true",
                         help="Use multi-scale ViT (features from blocks 3,7,11)")
     parser.add_argument("--wandb-project", type=str, default="vit-yolov9-stenosis",
@@ -86,10 +88,11 @@ def main():
     model = YOLO(str(yaml_path))
 
     # Load pretrained ViT encoder weights
-    if not args.no_pretrained and WEIGHTS_PATH.exists():
-        load_pretrained_vit(model, WEIGHTS_PATH)
+    weights_path = Path(args.weights) if args.weights else WEIGHTS_PATH
+    if not args.no_pretrained and weights_path.exists():
+        load_pretrained_vit(model, weights_path)
     elif not args.no_pretrained:
-        print(f"[WARNING] Pretrained weights not found at {WEIGHTS_PATH}, training from scratch")
+        print(f"[WARNING] Pretrained weights not found at {weights_path}, training from scratch")
 
     # Remove keys that are not model.train() arguments
     train_cfg.pop("task", None)
