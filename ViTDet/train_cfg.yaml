@@ -1,0 +1,41 @@
+# ViTDet ViTAE-Small Stenosis Training Configuration
+# ===================================================
+# Faster R-CNN with ViTAE-Small backbone + FPN
+# Pretrained weights: ViTDet/weights/ViTAE-S-GPU.pth (COCO Mask R-CNN)
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+data_root: data/stenosis_arcade
+class_names: ['stenosis_0', 'stenosis_1']
+
+# ── Training ──────────────────────────────────────────────────────────────────
+epochs: 100
+patience: 50           # early stopping after N epochs without improvement
+batch: 4
+imgsz: 512
+device: cuda:0
+workers: 4
+seed: 42
+amp: True              # mixed precision training
+
+# ── Backbone ──────────────────────────────────────────────────────────────────
+freeze_backbone_epochs: 10  # freeze backbone for first N epochs, then unfreeze
+
+# ── Optimizer ─────────────────────────────────────────────────────────────────
+optimizer: AdamW
+lr0: 0.0001            # initial learning rate (lower for pretrained ViT)
+backbone_lr_scale: 0.1 # backbone LR = lr0 * backbone_lr_scale after unfreeze
+weight_decay: 0.05
+warmup_epochs: 5
+
+# ── Augmentations ─────────────────────────────────────────────────────────────
+hflip: 0.5
+vflip: 0.5
+brightness: 0.3
+rotation: 15.0
+scale_min: 0.8
+scale_max: 1.2
+
+# ── Saving ────────────────────────────────────────────────────────────────────
+project: ViTDet/arcade
+name: train
+save_period: 10        # save checkpoint every N epochs (-1 = only best/last)
