@@ -40,14 +40,25 @@ YAML_PATH_MS = ROOT / "vit-yolov9-ms.yaml"
 DEFAULT_CFG = ROOT / "train_cfg_v9.yaml"
 
 
-def load_pretrained_vit(model: YOLO, weights_path: Path) -> None:
-    """Load VasoMIM pretrained encoder weights into the ViTEncoder layer."""
-    vit_encoder = model.model.model[0]  # layer 0 = ViTEncoder
+def load_pretrained_vit(trainer, weights_path: Path) -> None:
+    """Callback: load VasoMIM pretrained weights into the trainer's ViTEncoder.
+
+    Must be called as on_pretrain_routine_end callback, AFTER model.train()
+    has rebuilt the model from YAML (which discards any earlier weight loads).
+    Also patches the EMA model so both train and EMA copies have pretrained weights.
+    """
+    vit_encoder = trainer.model.model[0]  # layer 0 = ViTEncoder
     state = torch.load(str(weights_path), map_location="cpu", weights_only=True)
     msg = vit_encoder.vit.load_state_dict(state, strict=False)
     print(f"[ViTEncoder] Loaded pretrained weights from {weights_path}")
     print(f"  missing : {msg.missing_keys}")
     print(f"  unexpected: {msg.unexpected_keys}")
+
+    # Also load into EMA model so exponential moving average starts from pretrained
+    if hasattr(trainer, "ema") and trainer.ema is not None:
+        ema_vit = trainer.ema.ema.model[0]
+        ema_vit.vit.load_state_dict(state, strict=False)
+        print("[ViTEncoder] Also loaded pretrained weights into EMA model")
 
 
 def main():
@@ -87,10 +98,15 @@ def main():
     yaml_path = YAML_PATH_MS if args.multi_scale else YAML_PATH
     model = YOLO(str(yaml_path))
 
-    # Load pretrained ViT encoder weights
+    # Register callback to load pretrained ViT weights AFTER trainer rebuilds the model.
+    # model.train() calls get_model() which creates a fresh model from YAML,
+    # so we must load weights in on_pretrain_routine_end (after model is finalized).
     weights_path = Path(args.weights) if args.weights else WEIGHTS_PATH
-    if not args.no_pretrained and weights_path.exists():
-        load_pretrained_vit(model, weights_path)
+    use_pretrained = not args.no_pretrained and weights_path.exists()
+    if use_pretrained:
+        def _load_pretrained_callback(trainer):
+            load_pretrained_vit(trainer, weights_path)
+        model.add_callback("on_pretrain_routine_end", _load_pretrained_callback)
     elif not args.no_pretrained:
         print(f"[WARNING] Pretrained weights not found at {weights_path}, training from scratch")
 
@@ -123,7 +139,7 @@ def main():
 
     # If using pretrained weights, freeze ViT for first N epochs then unfreeze;
     # without pretrained weights, train everything from the start.
-    if not args.no_pretrained:
+    if use_pretrained:
         model.add_callback("on_train_epoch_start", unfreeze_vit_callback)
         train_cfg.setdefault("freeze", 1)
     else:
