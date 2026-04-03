@@ -70,6 +70,9 @@ from ultralytics.nn.modules import (
     ViTEncoder,
     ViTMultiScale,
     ViTMultiScaleTap,
+    SFPUp,
+    SFPLevel,
+    SFPDown,
     WorldDetect,
     YOLOEDetect,
     YOLOESegment,
@@ -1614,6 +1617,9 @@ def parse_model(d, ch, verbose=True):
             ViTEncoder,
             ViTMultiScale,
             ViTMultiScaleTap,
+            SFPUp,
+            SFPLevel,
+            SFPDown,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments

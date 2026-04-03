@@ -22,6 +22,7 @@ from ultralytics.nn.modules import ViTEncoder as ViTEncoderImported
 
 YAML_PATH = str(ROOT / "vit-yolo11.yaml")
 YAML_V9_PATH = str(ROOT / "vit-yolov9.yaml")
+YAML_VITDET_PATH = str(ROOT / "vit-yolov9-vitdet.yaml")
 WEIGHTS_PATH = REPO / "vasomim" / "weights" / "vit_small_encoder_512.pth"
 DATA_YAML = REPO / "data" / "dataset2_split_90_10" / "data.yaml"
 
@@ -863,6 +864,201 @@ class TestV9CUDA:
     def test_cuda_amp_forward(self):
         """Forward pass works with automatic mixed precision."""
         model = YOLO(YAML_V9_PATH)
+        model.model.cuda().eval()
+        x = torch.zeros(1, 3, 512, 512, device="cuda")
+        with torch.no_grad(), torch.amp.autocast("cuda"):
+            preds, _ = model.model(x)
+        assert torch.isfinite(preds).all()
+
+
+# =====================================================================
+# 16. ViTDet SFP — model build tests
+# =====================================================================
+
+class TestViTDetBuild:
+    """Tests for the ViTDet Simple Feature Pyramid architecture."""
+
+    def test_model_builds(self):
+        """ViTDet YAML loads without error."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model is not None
+
+    def test_num_layers(self):
+        """ViTDet model has 18 layers."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert len(model.model.model) == 18
+
+    def test_layer0_is_vit(self):
+        """Layer 0 is a ViTEncoder."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model.model[0].__class__.__name__ == "ViTEncoder"
+
+    def test_layer1_is_sfpup(self):
+        """Layer 1 is SFPUp (stride 8)."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model.model[1].__class__.__name__ == "SFPUp"
+
+    def test_layer2_is_sfplevel(self):
+        """Layer 2 is SFPLevel (stride 16)."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model.model[2].__class__.__name__ == "SFPLevel"
+
+    def test_layer3_is_sfpdown(self):
+        """Layer 3 is SFPDown (stride 32)."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model.model[3].__class__.__name__ == "SFPDown"
+
+    def test_last_layer_is_detect(self):
+        """Layer 17 is Detect."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model.model[-1].__class__.__name__ == "Detect"
+
+    def test_strides(self):
+        """Detect head strides are [8, 16, 32]."""
+        model = YOLO(YAML_VITDET_PATH)
+        strides = model.model.model[-1].stride.tolist()
+        assert strides == [8.0, 16.0, 32.0]
+
+    def test_nc(self):
+        """Single class (nc=1)."""
+        model = YOLO(YAML_VITDET_PATH)
+        assert model.model.model[-1].nc == 1
+
+
+# =====================================================================
+# 17. ViTDet SFP — forward pass tests
+# =====================================================================
+
+class TestViTDetForward:
+    """Forward pass tests for ViTDet model."""
+
+    def test_inference_512(self):
+        """512×512 inference produces valid output."""
+        model = YOLO(YAML_VITDET_PATH)
+        model.model.eval()
+        x = torch.zeros(1, 3, 512, 512)
+        with torch.no_grad():
+            preds, _ = model.model(x)
+        assert preds.ndim == 3
+        assert torch.isfinite(preds).all()
+
+    def test_feats_shapes(self):
+        """Train-mode features have correct P3/P4/P5 shapes."""
+        model = YOLO(YAML_VITDET_PATH)
+        model.model.train()
+        x = torch.zeros(1, 3, 512, 512)
+        result = model.model(x)
+        feats = result["feats"]
+        assert feats[0].shape == (1, 256, 64, 64), f"P3 wrong: {feats[0].shape}"
+        assert feats[1].shape == (1, 512, 32, 32), f"P4 wrong: {feats[1].shape}"
+        assert feats[2].shape == (1, 512, 16, 16), f"P5 wrong: {feats[2].shape}"
+
+    def test_inference_batch_2(self):
+        """Batch size 2 works correctly."""
+        model = YOLO(YAML_VITDET_PATH)
+        model.model.eval()
+        x = torch.zeros(2, 3, 512, 512)
+        with torch.no_grad():
+            preds, _ = model.model(x)
+        assert preds.shape[0] == 2
+
+    def test_gradient_flows(self):
+        """Gradients flow from output back through SFP to ViT."""
+        model = YOLO(YAML_VITDET_PATH)
+        model.model.train()
+        x = torch.randn(1, 3, 512, 512, requires_grad=True)
+        result = model.model(x)
+        feats = result["feats"]
+        loss = sum(f.sum() for f in feats)
+        loss.backward()
+        assert x.grad is not None
+
+    def test_different_input_resolution(self):
+        """Model handles 640×640 input."""
+        model = YOLO(YAML_VITDET_PATH)
+        model.model.eval()
+        x = torch.zeros(1, 3, 640, 640)
+        with torch.no_grad():
+            preds, _ = model.model(x)
+        assert torch.isfinite(preds).all()
+
+
+# =====================================================================
+# 18. ViTDet SFP — layer shape tests
+# =====================================================================
+
+class TestViTDetLayerShapes:
+    """Verify intermediate layer shapes in ViTDet model."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.model = YOLO(YAML_VITDET_PATH)
+        self.model.model.eval()
+        self.x = torch.zeros(1, 3, 512, 512)
+        self.outputs = {}
+        def hook_fn(idx):
+            def fn(m, inp, out):
+                self.outputs[idx] = out
+            return fn
+        for i, layer in enumerate(self.model.model.model):
+            layer.register_forward_hook(hook_fn(i))
+        with torch.no_grad():
+            self.model.model(self.x)
+
+    def test_layer0_vit(self):
+        """Layer 0 ViTEncoder: (1, 384, 32, 32)."""
+        assert self.outputs[0].shape == (1, 384, 32, 32)
+
+    def test_layer1_sfpup_p3(self):
+        """Layer 1 SFPUp: (1, 256, 64, 64) stride 8."""
+        assert self.outputs[1].shape == (1, 256, 64, 64)
+
+    def test_layer2_sfplevel_p4(self):
+        """Layer 2 SFPLevel: (1, 512, 32, 32) stride 16."""
+        assert self.outputs[2].shape == (1, 512, 32, 32)
+
+    def test_layer3_sfpdown_p5(self):
+        """Layer 3 SFPDown: (1, 512, 16, 16) stride 32."""
+        assert self.outputs[3].shape == (1, 512, 16, 16)
+
+    def test_layer4_sppelan(self):
+        """Layer 4 SPPELAN: (1, 512, 16, 16)."""
+        assert self.outputs[4].shape == (1, 512, 16, 16)
+
+    def test_layer10_p3_out(self):
+        """Layer 10 P3 output: (1, 256, 64, 64)."""
+        assert self.outputs[10].shape == (1, 256, 64, 64)
+
+    def test_layer13_p4_out(self):
+        """Layer 13 P4 output: (1, 512, 32, 32)."""
+        assert self.outputs[13].shape == (1, 512, 32, 32)
+
+    def test_layer16_p5_out(self):
+        """Layer 16 P5 output: (1, 512, 16, 16)."""
+        assert self.outputs[16].shape == (1, 512, 16, 16)
+
+
+# =====================================================================
+# 19. ViTDet SFP — CUDA tests
+# =====================================================================
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+class TestViTDetCUDA:
+    """GPU-specific tests for ViTDet model."""
+
+    def test_cuda_forward_pass(self):
+        """Forward pass on GPU produces valid output."""
+        model = YOLO(YAML_VITDET_PATH)
+        model.model.cuda().eval()
+        x = torch.zeros(1, 3, 512, 512, device="cuda")
+        with torch.no_grad():
+            preds, extra = model.model(x)
+        assert preds.is_cuda
+        assert torch.isfinite(preds).all()
+
+    def test_cuda_amp_forward(self):
+        """Forward pass works with automatic mixed precision."""
+        model = YOLO(YAML_VITDET_PATH)
         model.model.cuda().eval()
         x = torch.zeros(1, 3, 512, 512, device="cuda")
         with torch.no_grad(), torch.amp.autocast("cuda"):

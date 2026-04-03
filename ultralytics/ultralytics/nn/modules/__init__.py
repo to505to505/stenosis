@@ -93,7 +93,7 @@ from .head import (
     YOLOESegment26,
     v10Detect,
 )
-from .vit_encoder import ViTEncoder, ViTMultiScale, ViTMultiScaleTap
+from .vit_encoder import ViTEncoder, ViTMultiScale, ViTMultiScaleTap, SFPUp, SFPLevel, SFPDown
 from .transformer import (
     AIFI,
     MLP,
@@ -191,4 +191,7 @@ __all__ = (
     "ViTEncoder",
     "ViTMultiScale",
     "ViTMultiScaleTap",
+    "SFPUp",
+    "SFPLevel",
+    "SFPDown",
 )

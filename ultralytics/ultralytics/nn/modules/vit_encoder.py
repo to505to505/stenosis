@@ -175,3 +175,79 @@ class ViTMultiScaleTap(nn.Module):
         # We need to access the cache. The ViTMultiScale module is stored in
         # self._vit_ms which gets set during model construction.
         return self._vit_ms._ms_cache[self.tap_index]
+
+
+# ---------------------------------------------------------------------------
+# ViTDet Simple Feature Pyramid — learned multi-scale projections
+# ---------------------------------------------------------------------------
+
+class SFPUp(nn.Module):
+    """Simple Feature Pyramid — upsample to stride 8 (P3).
+
+    ConvTranspose2d ×2 → BN → SiLU → Conv2d 3×3 → BN → SiLU.
+    Creates a stride-8 feature map from the stride-16 ViT output.
+
+    Args:
+        c1 (int): Input channels (e.g. 384 from ViTEncoder).
+        c2 (int): Output channels (e.g. 256 for P3).
+    """
+
+    def __init__(self, c1: int, c2: int):
+        super().__init__()
+        self.up = nn.ConvTranspose2d(c1, c2, kernel_size=2, stride=2)
+        self.bn1 = nn.BatchNorm2d(c2)
+        self.act1 = nn.SiLU(inplace=True)
+        self.refine = nn.Conv2d(c2, c2, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(c2)
+        self.act2 = nn.SiLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act2(self.bn2(self.refine(self.act1(self.bn1(self.up(x))))))
+
+
+class SFPLevel(nn.Module):
+    """Simple Feature Pyramid — same stride 16 (P4).
+
+    Conv2d 1×1 → BN → SiLU → Conv2d 3×3 → BN → SiLU.
+    Projects ViT features at stride 16 with learned refinement.
+
+    Args:
+        c1 (int): Input channels (e.g. 384 from ViTEncoder).
+        c2 (int): Output channels (e.g. 512 for P4).
+    """
+
+    def __init__(self, c1: int, c2: int):
+        super().__init__()
+        self.proj = nn.Conv2d(c1, c2, kernel_size=1, stride=1)
+        self.bn1 = nn.BatchNorm2d(c2)
+        self.act1 = nn.SiLU(inplace=True)
+        self.refine = nn.Conv2d(c2, c2, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(c2)
+        self.act2 = nn.SiLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act2(self.bn2(self.refine(self.act1(self.bn1(self.proj(x))))))
+
+
+class SFPDown(nn.Module):
+    """Simple Feature Pyramid — downsample to stride 32 (P5).
+
+    Conv2d 3×3 stride 2 → BN → SiLU → Conv2d 3×3 → BN → SiLU.
+    Creates a stride-32 feature map from the stride-16 ViT output.
+
+    Args:
+        c1 (int): Input channels (e.g. 384 from ViTEncoder).
+        c2 (int): Output channels (e.g. 512 for P5).
+    """
+
+    def __init__(self, c1: int, c2: int):
+        super().__init__()
+        self.down = nn.Conv2d(c1, c2, kernel_size=3, stride=2, padding=1)
+        self.bn1 = nn.BatchNorm2d(c2)
+        self.act1 = nn.SiLU(inplace=True)
+        self.refine = nn.Conv2d(c2, c2, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(c2)
+        self.act2 = nn.SiLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.act2(self.bn2(self.refine(self.act1(self.bn1(self.down(x))))))

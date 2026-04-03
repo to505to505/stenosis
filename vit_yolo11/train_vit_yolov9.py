@@ -37,6 +37,7 @@ settings.update(wandb=True)
 WEIGHTS_PATH = ROOT.parent / "vasomim" / "weights" / "vit_small_encoder_512.pth"
 YAML_PATH = ROOT / "vit-yolov9.yaml"
 YAML_PATH_MS = ROOT / "vit-yolov9-ms.yaml"
+YAML_PATH_VITDET = ROOT / "vit-yolov9-vitdet.yaml"
 DEFAULT_CFG = ROOT / "train_cfg_v9.yaml"
 
 
@@ -84,6 +85,8 @@ def main():
                         help="Path to pretrained ViT weights (default: vasomim/weights/vit_small_encoder_512.pth)")
     parser.add_argument("--multi-scale", action="store_true",
                         help="Use multi-scale ViT (features from blocks 3,7,11)")
+    parser.add_argument("--vitdet", action="store_true",
+                        help="Use ViTDet Simple Feature Pyramid architecture")
     parser.add_argument("--wandb-project", type=str, default="vit-yolov9-stenosis",
                         help="W&B project name")
     # Quick overrides (take precedence over config file)
@@ -108,7 +111,7 @@ def main():
             train_cfg[key] = val
 
     # Build model from YAML
-    yaml_path = YAML_PATH_MS if args.multi_scale else YAML_PATH
+    yaml_path = YAML_PATH_VITDET if args.vitdet else (YAML_PATH_MS if args.multi_scale else YAML_PATH)
     model = YOLO(str(yaml_path))
 
     # Register callback to load pretrained ViT weights AFTER trainer rebuilds the model.
