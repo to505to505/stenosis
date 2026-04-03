@@ -9,3 +9,10 @@ tensorboard>=2.14
 timm
 polars
 wandb
+
+# ViTDet (mmdetection-based)
+cython
+pycocotools
+six
+terminaltables
+mmcv-full>=1.3.8,<=1.4.0
