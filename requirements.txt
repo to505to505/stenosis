@@ -16,4 +16,5 @@ pytorch_lightning>=2.0
 pandas>=2.0
 rich>=13.0
 albumentations>=2.0
-
+pycocotools
+faster-coco-eval

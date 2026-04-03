@@ -12,6 +12,7 @@ Usage:
     python train_rfdetr.py --wandb-project my_project      # custom W&B project
     python train_rfdetr.py --no-wandb                      # disable W&B
     python train_rfdetr.py --run-test                       # evaluate on test set after training
+    python train_rfdetr.py --pretrained-backbone vasomim/weights/vit_small_encoder_512.pth
 """
 
 import argparse
@@ -65,6 +66,111 @@ def ensure_valid_symlink(dataset_dir: str) -> None:
     if val_dir.exists() and not valid_dir.exists():
         valid_dir.symlink_to(val_dir.resolve())
         print(f"[INFO] Created symlink: {valid_dir} -> {val_dir}")
+
+
+def convert_timm_to_rfdetr(timm_state: dict) -> dict:
+    """Convert timm ViT state dict to RF-DETR's DINOv2 backbone format.
+
+    VasoMIM uses timm-style keys (blocks.0.attn.qkv.weight),
+    RF-DETR uses transformers-style keys (encoder.encoder.layer.0.attention...).
+    Also splits fused QKV into separate Q, K, V matrices.
+    """
+    rfdetr_state = {}
+
+    for key, value in timm_state.items():
+        # ── Embeddings ──
+        if key == "cls_token":
+            rfdetr_state["embeddings.cls_token"] = value
+        elif key == "pos_embed":
+            rfdetr_state["embeddings.position_embeddings"] = value
+        elif key == "patch_embed.proj.weight":
+            rfdetr_state["embeddings.patch_embeddings.projection.weight"] = value
+        elif key == "patch_embed.proj.bias":
+            rfdetr_state["embeddings.patch_embeddings.projection.bias"] = value
+
+        # ── Transformer blocks ──
+        elif key.startswith("blocks."):
+            parts = key.split(".")
+            layer_idx = parts[1]
+            rest = ".".join(parts[2:])
+            prefix = f"encoder.layer.{layer_idx}"
+
+            if rest == "norm1.weight":
+                rfdetr_state[f"{prefix}.norm1.weight"] = value
+            elif rest == "norm1.bias":
+                rfdetr_state[f"{prefix}.norm1.bias"] = value
+            elif rest == "norm2.weight":
+                rfdetr_state[f"{prefix}.norm2.weight"] = value
+            elif rest == "norm2.bias":
+                rfdetr_state[f"{prefix}.norm2.bias"] = value
+
+            # Split fused QKV → separate Q, K, V
+            elif rest == "attn.qkv.weight":
+                q, k, v = value.chunk(3, dim=0)
+                rfdetr_state[f"{prefix}.attention.attention.query.weight"] = q
+                rfdetr_state[f"{prefix}.attention.attention.key.weight"] = k
+                rfdetr_state[f"{prefix}.attention.attention.value.weight"] = v
+            elif rest == "attn.qkv.bias":
+                q, k, v = value.chunk(3, dim=0)
+                rfdetr_state[f"{prefix}.attention.attention.query.bias"] = q
+                rfdetr_state[f"{prefix}.attention.attention.key.bias"] = k
+                rfdetr_state[f"{prefix}.attention.attention.value.bias"] = v
+
+            # Attention output projection
+            elif rest == "attn.proj.weight":
+                rfdetr_state[f"{prefix}.attention.output.dense.weight"] = value
+            elif rest == "attn.proj.bias":
+                rfdetr_state[f"{prefix}.attention.output.dense.bias"] = value
+
+            # MLP (same key names)
+            elif rest == "mlp.fc1.weight":
+                rfdetr_state[f"{prefix}.mlp.fc1.weight"] = value
+            elif rest == "mlp.fc1.bias":
+                rfdetr_state[f"{prefix}.mlp.fc1.bias"] = value
+            elif rest == "mlp.fc2.weight":
+                rfdetr_state[f"{prefix}.mlp.fc2.weight"] = value
+            elif rest == "mlp.fc2.bias":
+                rfdetr_state[f"{prefix}.mlp.fc2.bias"] = value
+
+        # ── Final layer norm ──
+        elif key == "norm.weight":
+            rfdetr_state["layernorm.weight"] = value
+        elif key == "norm.bias":
+            rfdetr_state["layernorm.bias"] = value
+
+    return rfdetr_state
+
+
+def load_vasomim_backbone(model, weights_path: str) -> None:
+    """Load VasoMIM pretrained ViT weights into RF-DETR's DINOv2 backbone.
+
+    Converts timm ViT-Small keys to RF-DETR's transformers-style format,
+    splitting fused QKV into separate Q/K/V matrices.
+    """
+    weights_path = Path(weights_path)
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Backbone weights not found: {weights_path}")
+
+    timm_state = torch.load(str(weights_path), map_location="cpu", weights_only=True)
+    rfdetr_state = convert_timm_to_rfdetr(timm_state)
+
+    # backbone[0] is DinoV2 wrapper, .encoder is also DinoV2,
+    # .encoder.encoder is the actual WindowedDinov2WithRegistersBackbone
+    backbone_encoder = model.model.model.backbone[0].encoder.encoder
+    msg = backbone_encoder.load_state_dict(rfdetr_state, strict=False)
+
+    loaded = len(rfdetr_state) - len(msg.unexpected_keys)
+    print(f"[VasoMIM] Loaded {loaded}/{len(rfdetr_state)} keys into RF-DETR backbone")
+    if msg.missing_keys:
+        # Expected: layer_scale, mask_token, register_tokens
+        non_trivial = [k for k in msg.missing_keys
+                       if "layer_scale" not in k and "mask_token" not in k and "register" not in k]
+        if non_trivial:
+            print(f"[VasoMIM] Missing (non-trivial): {non_trivial}")
+        else:
+            print(f"[VasoMIM] Missing (expected — layer_scale/mask_token): {len(msg.missing_keys)} keys")
+    if msg.unexpected_keys:
+        print(f"[VasoMIM] Unexpected: {msg.unexpected_keys}")
 
 
 def write_best_txt(output_dir: str, train_config: dict, model_size: str) -> None:
@@ -161,6 +267,8 @@ def main():
     parser.add_argument("--model-size", type=str, default="small",
                         choices=list(MODEL_VARIANTS.keys()),
                         help="RF-DETR variant: nano (384), small (512), medium (576), large (704)")
+    parser.add_argument("--pretrained-backbone", type=str, default=None,
+                        help="Path to VasoMIM ViT-Small weights (.pth) to replace DINOv2 backbone")
 
     # Data
     parser.add_argument("--dataset-dir", type=str, default=DEFAULT_DATASET,
@@ -219,6 +327,10 @@ def main():
     ModelClass = get_model_class(args.model_size)
     model = ModelClass()
     print(f"[INFO] Model: {MODEL_VARIANTS[args.model_size]}")
+
+    # ── Load custom backbone weights ──
+    if args.pretrained_backbone:
+        load_vasomim_backbone(model, args.pretrained_backbone)
 
     # ── Grayscale-optimized augmentations ──
     # Stenosis angiograms are grayscale — disable color augmentations,
@@ -279,6 +391,7 @@ def main():
         flat_config = {k: str(v) for k, v in train_config.items()}
         flat_config["model_size"] = args.model_size
         flat_config["model_variant"] = MODEL_VARIANTS[args.model_size]
+        flat_config["pretrained_backbone"] = str(args.pretrained_backbone or "DINOv2 (default)")
 
         write_best_txt(output_dir, flat_config, args.model_size)
         copy_train_csv(output_dir)
