@@ -14,6 +14,8 @@ which is required because DetectionModel probes strides with 256×256 dummy inpu
 while training uses 512×512.
 """
 
+import copy
+
 import torch
 import torch.nn as nn
 from timm.models.vision_transformer import VisionTransformer
@@ -106,6 +108,18 @@ class ViTMultiScale(nn.Module):
         # Shared cache — filled during forward, read by ViTMultiScaleTap
         self._ms_cache: list[torch.Tensor] = []
 
+    def __deepcopy__(self, memo):
+        """Skip _ms_cache during deepcopy (contains non-leaf computation graph tensors)."""
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k == "_ms_cache":
+                setattr(result, k, [])
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run full ViT and cache multi-scale features.
 
@@ -153,7 +167,7 @@ class ViTMultiScaleTap(nn.Module):
     def __init__(self, c1: int = 384, c2: int = 384, tap_index: int = 0):
         super().__init__()
         self.tap_index = tap_index
-        # No parameters — just retrieves from cache
+        self._vit_ms = None  # set during model construction in tasks.py
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x is the output of ViTMultiScale (last tap). Walk up to find the cache."""
