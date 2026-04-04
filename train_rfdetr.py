@@ -336,10 +336,19 @@ def main():
     # Stenosis angiograms are grayscale — disable color augmentations,
     # keep geometric + brightness augmentations
     aug_config = {
+        # Geometric
         "HorizontalFlip": {"p": 0.5},
         "VerticalFlip": {"p": 0.5},
-        "Rotate": {"limit": 15, "p": 0.3},
+        "Rotate": {"limit": 20, "p": 0.3},
+        "Affine": {"scale": (0.9, 1.1), "translate_percent": (-0.05, 0.05), "p": 0.3},
+        "Perspective": {"scale": (0.02, 0.05), "p": 0.15},
+        # Pixel-level (grayscale-safe)
         "RandomBrightnessContrast": {"brightness_limit": 0.3, "contrast_limit": 0.3, "p": 0.5},
+        "CLAHE": {"clip_limit": 4.0, "p": 0.3},
+        "RandomGamma": {"gamma_limit": (80, 120), "p": 0.3},
+        "GaussianBlur": {"blur_limit": 3, "p": 0.2},
+        "GaussNoise": {"std_range": (0.01, 0.05), "p": 0.2},
+        "Sharpen": {"alpha": (0.2, 0.5), "lightness": (0.5, 1.0), "p": 0.2},
     }
 
     # ── Assemble training config ──
