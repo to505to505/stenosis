@@ -201,13 +201,13 @@ def write_best_txt(output_dir: str, train_config: dict, model_size: str) -> None
     if metrics_csv.exists():
         df = pd.read_csv(metrics_csv)
 
-        # Find best epoch by val/mAP_50_95
-        if "val/mAP_50_95" in df.columns:
-            val_df = df.dropna(subset=["val/mAP_50_95"])
+        # Find best epoch by val/mAP_50
+        if "val/mAP_50" in df.columns:
+            val_df = df.dropna(subset=["val/mAP_50"])
             if len(val_df) > 0:
-                best_idx = val_df["val/mAP_50_95"].idxmax()
+                best_idx = val_df["val/mAP_50"].idxmax()
                 best_row = val_df.loc[best_idx]
-                best_map = best_row["val/mAP_50_95"]
+                best_map = best_row["val/mAP_50"]
 
                 # Collect all val/ and ema/ metrics from best row
                 for col in sorted(df.columns):
@@ -217,10 +217,10 @@ def write_best_txt(output_dir: str, train_config: dict, model_size: str) -> None
                             best_metrics[col] = v
 
         # Also get EMA mAP if available
-        if "val/ema_mAP_50_95" in df.columns:
-            ema_df = df.dropna(subset=["val/ema_mAP_50_95"])
+        if "val/ema_mAP_50" in df.columns:
+            ema_df = df.dropna(subset=["val/ema_mAP_50"])
             if len(ema_df) > 0:
-                best_ema_idx = ema_df["val/ema_mAP_50_95"].idxmax()
+                best_ema_idx = ema_df["val/ema_mAP_50"].idxmax()
                 best_ema_row = ema_df.loc[best_ema_idx]
                 for col in sorted(df.columns):
                     if col.startswith("val/ema_"):
@@ -233,7 +233,7 @@ def write_best_txt(output_dir: str, train_config: dict, model_size: str) -> None
     with open(best_txt, "w") as f:
         f.write(f"RF-DETR ({MODEL_VARIANTS[model_size]}) Best Results\n")
         f.write("=" * 40 + "\n\n")
-        f.write(f"Best mAP50-95: {best_map:.5f}\n")
+        f.write(f"Best mAP50:    {best_map:.5f}\n")
         f.write(f"Best epoch:    {best_epoch}\n")
 
         f.write("\n--- Metrics ---\n")
