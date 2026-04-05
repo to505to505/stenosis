@@ -60,7 +60,7 @@ def test_config_defaults():
     assert cfg.img_h == 512
     assert cfg.img_w == 512
     assert cfg.in_channels == 1
-    assert cfg.batch_size == 2
+    assert cfg.batch_size == 4
     assert cfg.grad_accum_steps == 1
     assert cfg.lr == 0.02
     assert cfg.momentum == 0.9

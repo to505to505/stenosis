@@ -14,6 +14,9 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+import albumentations as A
+from albumentations import ReplayCompose
+
 from .config import Config
 
 # Regex for filenames like: 14_021_1_0046_bmp_jpg.rf.<uuid>.jpg
@@ -96,6 +99,41 @@ def load_yolo_labels(label_path: Path, img_w: int, img_h: int) -> np.ndarray:
     return np.column_stack([cls, x1, y1, x2, y2])
 
 
+def build_train_augmentation(img_h: int, img_w: int) -> ReplayCompose:
+    """Build augmentation pipeline for training.
+
+    Uses ReplayCompose so the same random params can be replayed
+    across all T frames in a temporal window.
+    Grayscale-safe — no color augmentations.
+    """
+    return ReplayCompose(
+        [
+            A.HorizontalFlip(p=0.5),
+            A.VerticalFlip(p=0.5),
+            A.Rotate(limit=20, border_mode=cv2.BORDER_CONSTANT, p=0.3),
+            A.Affine(
+                scale=(0.9, 1.1),
+                translate_percent=(-0.05, 0.05),
+                border_mode=cv2.BORDER_CONSTANT,
+                p=0.3,
+            ),
+            A.RandomBrightnessContrast(
+                brightness_limit=0.3, contrast_limit=0.3, p=0.5,
+            ),
+            A.CLAHE(clip_limit=4.0, p=0.3),
+            A.RandomGamma(gamma_limit=(80, 120), p=0.3),
+            A.GaussianBlur(blur_limit=3, p=0.2),
+            A.GaussNoise(std_range=(0.01, 0.05), p=0.2),
+        ],
+        bbox_params=A.BboxParams(
+            format="pascal_voc",
+            label_fields=["class_ids"],
+            min_area=1.0,
+            min_visibility=0.2,
+        ),
+    )
+
+
 class StenosisTemporalDataset(Dataset):
     """Dataset yielding windows of T consecutive grayscale frames + labels."""
 
@@ -113,10 +151,17 @@ class StenosisTemporalDataset(Dataset):
         sequences = build_sequence_index(self.img_dir)
         self.windows = build_windows(sequences, cfg.T)
 
+        # Augmentation only for training
+        self.augment = (
+            build_train_augmentation(cfg.img_h, cfg.img_w)
+            if split == "train" else None
+        )
+
         print(
             f"[{split}] {len(sequences)} sequences, "
             f"{sum(len(s[2]) for s in sequences)} frames, "
             f"{len(self.windows)} windows of T={cfg.T}"
+            f"{' (augmented)' if self.augment else ''}"
         )
 
     def __len__(self) -> int:
@@ -126,8 +171,9 @@ class StenosisTemporalDataset(Dataset):
         paths = self.windows[idx]
         images = []
         targets = []
+        saved_replay = None  # will store replay data from first frame
 
-        for img_path in paths:
+        for frame_i, img_path in enumerate(paths):
             # Load grayscale
             img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
             if img is None:
@@ -141,6 +187,30 @@ class StenosisTemporalDataset(Dataset):
                     interpolation=cv2.INTER_LINEAR,
                 )
 
+            # Labels — YOLO format is normalized, convert to target image size
+            lbl_name = img_path.stem + ".txt"
+            lbl_path = self.lbl_dir / lbl_name
+            labels = load_yolo_labels(lbl_path, self.cfg.img_w, self.cfg.img_h)
+            bboxes = labels[:, 1:5].tolist()   # list of [x1,y1,x2,y2]
+            class_ids = labels[:, 0].astype(int).tolist()
+
+            # Apply augmentations (same transform for all frames via replay)
+            if self.augment is not None:
+                if frame_i == 0:
+                    # First frame: run normally, capture replay data
+                    result = self.augment(
+                        image=img, bboxes=bboxes, class_ids=class_ids,
+                    )
+                    saved_replay = result["replay"]
+                else:
+                    # Subsequent frames: replay exact same transform
+                    result = ReplayCompose.replay(
+                        saved_replay, image=img, bboxes=bboxes, class_ids=class_ids,
+                    )
+                img = result["image"]
+                bboxes = result["bboxes"]
+                class_ids = result["class_ids"]
+
             img = img.astype(np.float32)
             # Normalize
             img = (img - self.cfg.pixel_mean) / self.cfg.pixel_std
@@ -148,13 +218,11 @@ class StenosisTemporalDataset(Dataset):
             img_tensor = torch.from_numpy(img).unsqueeze(0)
             images.append(img_tensor)
 
-            # Labels — YOLO format is normalized, convert to target image size
-            lbl_name = img_path.stem + ".txt"
-            lbl_path = self.lbl_dir / lbl_name
-            labels = load_yolo_labels(lbl_path, self.cfg.img_w, self.cfg.img_h)
-
-            boxes = torch.from_numpy(labels[:, 1:5])   # (N, 4) x1y1x2y2
-            cls_ids = torch.zeros(len(boxes), dtype=torch.int64)  # single class=0
+            if len(bboxes) > 0:
+                boxes = torch.tensor(bboxes, dtype=torch.float32)
+            else:
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+            cls_ids = torch.zeros(len(boxes), dtype=torch.int64)
             targets.append({"boxes": boxes, "labels": cls_ids})
 
         images = torch.stack(images, dim=0)  # (T, 1, H, W)
