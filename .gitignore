@@ -13,3 +13,4 @@ vit_yolo11/arcade/
 yolo/yolov9/runs/
 yolo/yolov9/wandb/
 yolo/yolov9/weights/
+rfdetr_runs/

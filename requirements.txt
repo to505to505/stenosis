@@ -18,3 +18,5 @@ rich>=13.0
 albumentations>=2.0
 pycocotools
 faster-coco-eval
+b2
+wandb
