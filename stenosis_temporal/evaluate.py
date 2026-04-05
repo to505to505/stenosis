@@ -118,6 +118,111 @@ def evaluate_map(
     return compute_ap(recalls, precisions)
 
 
+def compute_max_recall(
+    all_detections: list,
+    all_ground_truths: list,
+    iou_threshold: float = 0.5,
+    max_dets: int = 100,
+) -> float:
+    """Compute max recall at a given IoU threshold with at most max_dets per image."""
+    total_gt = sum(gt.shape[0] for gt in all_ground_truths)
+    if total_gt == 0:
+        return 0.0
+
+    total_tp = 0
+    for img_id, (det, gt) in enumerate(zip(all_detections, all_ground_truths)):
+        if gt.shape[0] == 0:
+            continue
+        boxes = det["boxes"]
+        scores = det["scores"]
+        if len(scores) == 0:
+            continue
+        # Keep top max_dets by score
+        order = np.argsort(-scores)[:max_dets]
+        boxes = boxes[order]
+
+        matched = np.zeros(gt.shape[0], dtype=bool)
+        for d_box in boxes:
+            ixmin = np.maximum(gt[:, 0], d_box[0])
+            iymin = np.maximum(gt[:, 1], d_box[1])
+            ixmax = np.minimum(gt[:, 2], d_box[2])
+            iymax = np.minimum(gt[:, 3], d_box[3])
+            iw = np.maximum(ixmax - ixmin, 0.0)
+            ih = np.maximum(iymax - iymin, 0.0)
+            inter = iw * ih
+            det_area = (d_box[2] - d_box[0]) * (d_box[3] - d_box[1])
+            gt_area = (gt[:, 2] - gt[:, 0]) * (gt[:, 3] - gt[:, 1])
+            union = det_area + gt_area - inter
+            iou = inter / np.maximum(union, 1e-6)
+            best_gt = np.argmax(iou)
+            if iou[best_gt] >= iou_threshold and not matched[best_gt]:
+                matched[best_gt] = True
+                total_tp += 1
+    return total_tp / total_gt
+
+
+def f1_confidence_sweep(
+    all_detections: list,
+    all_ground_truths: list,
+    iou_threshold: float = 0.5,
+    num_thresholds: int = 101,
+) -> tuple:
+    """Sweep confidence thresholds and return (best_f1, precision, recall, threshold)."""
+    total_gt = sum(gt.shape[0] for gt in all_ground_truths)
+    if total_gt == 0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    best_f1, best_p, best_r, best_thr = 0.0, 0.0, 0.0, 0.0
+
+    for thr in np.linspace(0.0, 1.0, num_thresholds):
+        tp, fp, fn = 0, 0, 0
+        for img_id, (det, gt) in enumerate(zip(all_detections, all_ground_truths)):
+            scores = det["scores"]
+            boxes = det["boxes"]
+            mask = scores >= thr
+            filt_boxes = boxes[mask]
+
+            n_gt = gt.shape[0]
+            if n_gt == 0:
+                fp += filt_boxes.shape[0]
+                continue
+            if filt_boxes.shape[0] == 0:
+                fn += n_gt
+                continue
+
+            matched = np.zeros(n_gt, dtype=bool)
+            # Sort filtered detections by score desc
+            filt_scores = scores[mask]
+            order = np.argsort(-filt_scores)
+            for d_box in filt_boxes[order]:
+                ixmin = np.maximum(gt[:, 0], d_box[0])
+                iymin = np.maximum(gt[:, 1], d_box[1])
+                ixmax = np.minimum(gt[:, 2], d_box[2])
+                iymax = np.minimum(gt[:, 3], d_box[3])
+                iw = np.maximum(ixmax - ixmin, 0.0)
+                ih = np.maximum(iymax - iymin, 0.0)
+                inter = iw * ih
+                det_area = (d_box[2] - d_box[0]) * (d_box[3] - d_box[1])
+                gt_area = (gt[:, 2] - gt[:, 0]) * (gt[:, 3] - gt[:, 1])
+                union = det_area + gt_area - inter
+                iou = inter / np.maximum(union, 1e-6)
+                best_gt = np.argmax(iou)
+                if iou[best_gt] >= iou_threshold and not matched[best_gt]:
+                    matched[best_gt] = True
+                    tp += 1
+                else:
+                    fp += 1
+            fn += int(np.sum(~matched))
+
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2 * precision * recall / max(precision + recall, 1e-8)
+        if f1 > best_f1:
+            best_f1, best_p, best_r, best_thr = f1, precision, recall, thr
+
+    return best_f1, best_p, best_r, best_thr
+
+
 @torch.no_grad()
 def run_evaluation(model, loader, device, cfg):
     """Run model on dataset and compute mAP."""
@@ -145,15 +250,37 @@ def run_evaluation(model, loader, device, cfg):
     # mAP @ 0.5
     ap50 = evaluate_map(all_detections, all_ground_truths, iou_threshold=0.5)
 
+    # mAP @ 0.75
+    ap75 = evaluate_map(all_detections, all_ground_truths, iou_threshold=0.75)
+
     # mAP @ 0.5:0.95
+    iou_thresholds = np.arange(0.5, 1.0, 0.05)
     aps = []
-    for iou_thr in np.arange(0.5, 1.0, 0.05):
+    for iou_thr in iou_thresholds:
         aps.append(evaluate_map(all_detections, all_ground_truths, iou_threshold=iou_thr))
     ap5095 = np.mean(aps)
 
+    # mAR — mean Average Recall (max recall at max_dets, averaged over IoU thresholds)
+    recalls_per_iou = []
+    for iou_thr in iou_thresholds:
+        r = compute_max_recall(all_detections, all_ground_truths, iou_threshold=iou_thr)
+        recalls_per_iou.append(r)
+    mar = float(np.mean(recalls_per_iou))
+
+    # F1 sweep at IoU=0.5 — find best confidence threshold
+    best_f1, best_precision, best_recall, best_conf = f1_confidence_sweep(
+        all_detections, all_ground_truths, iou_threshold=0.5,
+    )
+
     return {
         "AP@0.5": ap50,
+        "AP@0.75": ap75,
         "AP@0.5:0.95": ap5095,
+        "mAR": mar,
+        "F1": best_f1,
+        "precision": best_precision,
+        "recall": best_recall,
+        "best_conf_threshold": best_conf,
         "num_detections": len(all_detections),
         "num_gt": sum(gt.shape[0] for gt in all_ground_truths),
     }
@@ -180,7 +307,12 @@ def main():
     metrics = run_evaluation(model, loader, device, cfg)
     print(f"\nResults on {args.split}:")
     print(f"  AP@0.5:      {metrics['AP@0.5']:.4f}")
+    print(f"  AP@0.75:     {metrics['AP@0.75']:.4f}")
     print(f"  AP@0.5:0.95: {metrics['AP@0.5:0.95']:.4f}")
+    print(f"  mAR:         {metrics['mAR']:.4f}")
+    print(f"  F1:          {metrics['F1']:.4f}  (conf={metrics['best_conf_threshold']:.2f})")
+    print(f"  Precision:   {metrics['precision']:.4f}")
+    print(f"  Recall:      {metrics['recall']:.4f}")
     print(f"  Detections:  {metrics['num_detections']}")
     print(f"  GT boxes:    {metrics['num_gt']}")
 

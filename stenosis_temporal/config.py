@@ -7,8 +7,8 @@ from pathlib import Path
 @dataclass
 class Config:
     # ── Paths ──────────────────────────────────────────────────────────
-    data_root: Path = Path("/workspace/stenosis/data/dataset2_split")
-    output_dir: Path = Path("/workspace/stenosis/stenosis_temporal/runs")
+    data_root: Path = Path("/home/dsa/stenosis/data/dataset2_split")
+    output_dir: Path = Path("/home/dsa/stenosis/stenosis_temporal/runs")
 
     # ── Image ──────────────────────────────────────────────────────────
     img_h: int = 512
@@ -69,6 +69,11 @@ class Config:
     lr_step_milestones: tuple = (60, 80)
     lr_gamma: float = 0.1
     grad_accum_steps: int = 1     # 1 = no accumulation (direct batch)
+
+    # ── Logging ─────────────────────────────────────────────────────────
+    wandb_project: str = "stenosis-temporal"
+    wandb_enabled: bool = True
+    run_name: str | None = None   # auto-generated if None
 
     # ── Misc ───────────────────────────────────────────────────────────
     seed: int = 42
