@@ -60,7 +60,7 @@ class Config:
 
     # ── Training ───────────────────────────────────────────────────────
     epochs: int = 100
-    batch_size: int = 4
+    batch_size: int = 2
     num_workers: int = 4
     lr: float = 0.02
     momentum: float = 0.9
