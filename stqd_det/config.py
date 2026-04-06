@@ -22,7 +22,7 @@ class Config:
 
     # ── Backbone / FPN ─────────────────────────────────────────────────
     C: int = 256                  # FPN output channels
-    gradient_checkpointing: bool = False
+    gradient_checkpointing: bool = True
 
     # ── GFE (Global Feature Enhancement) ───────────────────────────────
     gfe_num_heads: int = 8
@@ -30,7 +30,7 @@ class Config:
     gfe_dc_groups: int = 4        # groups for dynamic convolution
 
     # ── SQNB (Sequential Quantum Noise Box) ────────────────────────────
-    num_proposals: int = 300      # number of noise proposals per frame
+    num_proposals: int = 100      # number of noise proposals per frame
     diffusion_steps: int = 1000   # total diffusion timesteps
     snr_scale: float = 2.0        # signal-to-noise scaling factor
     box_renewal: bool = True      # renew boxes during iterative inference

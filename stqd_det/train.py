@@ -125,6 +125,14 @@ def main():
     parser.add_argument("--name", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--data-root", type=str, default=None)
+    parser.add_argument("--num-proposals", type=int, default=None,
+                        help="Number of noise proposals per frame (default: 100)")
+    parser.add_argument("--decoder-layers", type=int, default=None,
+                        help="Number of decoder layers (default: 6)")
+    parser.add_argument("--img-size", type=int, default=None,
+                        help="Image size H=W (default: 512)")
+    parser.add_argument("--no-grad-ckpt", action="store_true",
+                        help="Disable gradient checkpointing")
     args = parser.parse_args()
 
     cfg = Config()
@@ -138,6 +146,15 @@ def main():
         cfg.epochs = args.epochs
     if args.data_root:
         cfg.data_root = Path(args.data_root)
+    if args.num_proposals:
+        cfg.num_proposals = args.num_proposals
+    if args.decoder_layers:
+        cfg.decoder_layers = args.decoder_layers
+    if args.img_size:
+        cfg.img_h = args.img_size
+        cfg.img_w = args.img_size
+    if args.no_grad_ckpt:
+        cfg.gradient_checkpointing = False
 
     device = torch.device(f"cuda:{args.device}" if torch.cuda.is_available() else "cpu")
 

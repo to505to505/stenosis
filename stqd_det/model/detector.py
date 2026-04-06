@@ -16,6 +16,7 @@ Full pipeline:
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from torchvision.ops import nms
 
 from ..config import Config
@@ -76,10 +77,22 @@ class STQDDet(nn.Module):
         device = images.device
 
         # ── Step 1: Backbone ──────────────────────────────────────────
-        # Flatten batch and time: (B*T, 1, H, W)
+        # Process each frame through backbone separately to save VRAM.
+        # With gradient checkpointing, intermediate ResNet activations are
+        # freed after each frame and recomputed during backward.
         flat_images = images.reshape(B * T, 1, H, W)
-        fpn_features = self.backbone(flat_images)
-        # fpn_features: OrderedDict "0".."3", each (B*T, 256, H_i, W_i)
+        fpn_list = []
+        for i in range(B * T):
+            frame = flat_images[i : i + 1]  # (1, 1, H, W)
+            if self.training and self.cfg.gradient_checkpointing:
+                fpn_i = checkpoint(self.backbone, frame, use_reentrant=False)
+            else:
+                fpn_i = self.backbone(frame)
+            fpn_list.append(fpn_i)
+        # Merge per-frame FPN outputs: each key → (B*T, 256, H_i, W_i)
+        fpn_features = {}
+        for key in fpn_list[0]:
+            fpn_features[key] = torch.cat([f[key] for f in fpn_list], dim=0)
 
         # ── Step 2: GFE on top FPN layer ─────────────────────────────
         fpn_features = self.gfe(fpn_features, num_frames=T)
@@ -139,28 +152,25 @@ class STQDDet(nn.Module):
                 batch_fpn, noisy_proposals, batch_image_sizes, timesteps
             )
 
-            # Stage 1 losses
-            stage1_losses = self.criterion(
-                stage1_outputs, gt_boxes, gt_labels
-            )
-
             # ── Step 5: STFS ──────────────────────────────────────────
-            # Get last layer predictions for STFS matching
+            # Get last layer predictions for STFS matching (detached —
+            # STFS matching is non-differentiable, no need to keep grad)
             last_output = stage1_outputs[-1]
             frame_predictions = []
             for t in range(T):
-                cls_probs = last_output["cls_logits"][t].sigmoid()
+                cls_probs = last_output["cls_logits"][t].detach().sigmoid()
                 scores, labels = cls_probs.max(dim=-1)
                 frame_predictions.append({
-                    "boxes": last_output["box_pred"][t],
+                    "boxes": last_output["box_pred"][t].detach(),
                     "scores": scores,
                     "labels": labels,
                 })
 
-            # Run STFS
-            h_tp, h_fn, h_fp, corrected_rois = self.stfs(
-                batch_fpn, frame_predictions, batch_image_sizes, T
-            )
+            # Run STFS (no grad needed — only produces voted count)
+            with torch.no_grad():
+                h_tp, h_fn, h_fp, corrected_rois = self.stfs(
+                    batch_fpn, frame_predictions, batch_image_sizes, T
+                )
 
             # Compute voted count for consistency loss
             voted_count = len(h_tp) + len(h_fn)  # expected number of real objects
