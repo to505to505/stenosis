@@ -142,12 +142,13 @@ def focal_loss(
     pred: torch.Tensor, target: torch.Tensor,
     alpha: float = 0.25, gamma: float = 2.0,
 ) -> torch.Tensor:
-    """Focal loss for location prediction."""
-    pred_sigmoid = pred.sigmoid()
+    """Focal loss for location prediction (computed in fp32 for AMP safety)."""
+    pred = pred.float()
     target = target.float()
+    pred_sigmoid = pred.sigmoid()
     pt = torch.where(target == 1, pred_sigmoid, 1 - pred_sigmoid)
     at = torch.where(target == 1, alpha, 1 - alpha)
-    loss = -at * (1 - pt) ** gamma * torch.log(pt.clamp(min=1e-8))
+    loss = -at * (1 - pt) ** gamma * torch.log(pt.clamp(min=1e-6))
     return loss.mean()
 
 

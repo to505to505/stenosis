@@ -54,6 +54,8 @@ def train_one_epoch(
 
         total_loss = losses["total_loss"]
         scaler.scale(total_loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         scaler.step(optimizer)
         scaler.update()
 

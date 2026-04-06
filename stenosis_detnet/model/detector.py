@@ -221,9 +221,9 @@ class StenosisDetNet(nn.Module):
                     ref_proposals, gt_boxes, gt_labels
                 )
 
-                # Classification loss
+                # Classification loss (fp32 for AMP safety)
                 det_cls_loss += F.cross_entropy(
-                    all_cls_logits[i], assigned_labels
+                    all_cls_logits[i].float(), assigned_labels
                 )
 
                 # Regression loss (foreground only)
