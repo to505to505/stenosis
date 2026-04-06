@@ -258,8 +258,12 @@ class StenosisDetNet(nn.Module):
                 ref_proposals = all_proposals_for_ref[i]
 
                 pred_boxes = decode_boxes(deltas, ref_proposals)
-                pred_boxes[:, 0::2] = pred_boxes[:, 0::2].clamp(0, cfg.img_w)
-                pred_boxes[:, 1::2] = pred_boxes[:, 1::2].clamp(0, cfg.img_h)
+                pred_boxes = torch.cat([
+                    pred_boxes[:, 0:1].clamp(0, cfg.img_w),
+                    pred_boxes[:, 1:2].clamp(0, cfg.img_h),
+                    pred_boxes[:, 2:3].clamp(0, cfg.img_w),
+                    pred_boxes[:, 3:4].clamp(0, cfg.img_h),
+                ], dim=1)
 
                 keep = scores > cfg.score_thresh
                 scores = scores[keep]

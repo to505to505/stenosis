@@ -371,7 +371,7 @@ class GuidedAnchoringRPN(nn.Module):
             shape_pred: (N, 2, H, W)
             loc_pred: (N, 1, H, W)
         """
-        x = F.relu(self.rpn_conv(x), inplace=True)
+        x = F.relu(self.rpn_conv(x), inplace=False)
 
         loc_pred = self.conv_loc(x)
         shape_pred = self.conv_shape(x)
@@ -438,9 +438,13 @@ class GuidedAnchoringRPN(nn.Module):
             # Decode box deltas relative to guided anchors
             pred_boxes = self._decode_deltas(valid_deltas, valid_guided)
 
-            # Clamp to image
-            pred_boxes[:, 0::2] = pred_boxes[:, 0::2].clamp(0, img_w)
-            pred_boxes[:, 1::2] = pred_boxes[:, 1::2].clamp(0, img_h)
+            # Clamp to image (out-of-place to avoid autograd inplace error)
+            pred_boxes = torch.cat([
+                pred_boxes[:, 0:1].clamp(0, img_w),
+                pred_boxes[:, 1:2].clamp(0, img_h),
+                pred_boxes[:, 2:3].clamp(0, img_w),
+                pred_boxes[:, 3:4].clamp(0, img_h),
+            ], dim=1)
 
             all_proposals.append((pred_boxes, valid_scores))
 
