@@ -180,10 +180,17 @@ class StenosisTemporalDetector(nn.Module):
                 idx = b * T + t
                 ref_proposals = proposals[idx]  # (S, 4)
 
+                # During training, append GT boxes to proposals so
+                # high-IoU examples are guaranteed for the detection head
+                if self.training and targets is not None:
+                    gt_boxes_t = targets[b][t]["boxes"].to(device)
+                    if gt_boxes_t.numel() > 0:
+                        ref_proposals = torch.cat([ref_proposals, gt_boxes_t], dim=0)
+
                 # PSTFA: aggregate spatio-temporal features
                 aggregated_roi = self.pstfa(
                     frame_features, ref_proposals, ref_idx=t
-                )  # (S, C, roi_size, roi_size)
+                )  # (S', C, roi_size, roi_size) where S'=S+G during training
 
                 # MTO: classify + regress
                 cls_logits, box_deltas = self.mto(aggregated_roi)
@@ -200,6 +207,11 @@ class StenosisTemporalDetector(nn.Module):
             det_reg_loss = torch.tensor(0.0, device=device)
             num_frames = 0
 
+            # Balanced sampling parameters (standard Faster R-CNN)
+            roi_batch_size = 128
+            roi_positive_fraction = 0.25
+            num_pos_max = int(roi_batch_size * roi_positive_fraction)  # 32
+
             for i, (b, t) in enumerate(all_ref_indices):
                 gt_boxes = targets[b][t]["boxes"].to(device)
                 gt_labels = targets[b][t]["labels"].to(device)
@@ -210,17 +222,41 @@ class StenosisTemporalDetector(nn.Module):
                     ref_proposals, gt_boxes, gt_labels
                 )
 
-                # Classification loss
+                # ── Balanced sampling: sample roi_batch_size proposals ──
+                pos_idx = torch.where(assigned_labels > 0)[0]
+                neg_idx = torch.where(assigned_labels == 0)[0]
+                num_pos = min(pos_idx.numel(), num_pos_max)
+                num_neg = min(neg_idx.numel(), roi_batch_size - num_pos)
+
+                if num_pos > 0:
+                    perm_pos = torch.randperm(pos_idx.numel(), device=device)[:num_pos]
+                    pos_idx = pos_idx[perm_pos]
+                if num_neg > 0:
+                    perm_neg = torch.randperm(neg_idx.numel(), device=device)[:num_neg]
+                    neg_idx = neg_idx[perm_neg]
+
+                sampled_idx = torch.cat([pos_idx, neg_idx])
+                if sampled_idx.numel() == 0:
+                    num_frames += 1
+                    continue
+
+                sampled_labels = assigned_labels[sampled_idx]
+                sampled_gt = matched_gt[sampled_idx]
+                sampled_proposals = ref_proposals[sampled_idx]
+                sampled_cls_logits = all_cls_logits[i][sampled_idx]
+                sampled_box_deltas = all_box_deltas[i][sampled_idx]
+
+                # Classification loss on balanced sample
                 det_cls_loss += F.cross_entropy(
-                    all_cls_logits[i], assigned_labels
+                    sampled_cls_logits, sampled_labels
                 )
 
                 # Regression loss (only on foreground proposals)
-                fg_mask = assigned_labels > 0
+                fg_mask = sampled_labels > 0
                 if fg_mask.any():
-                    fg_proposals = ref_proposals[fg_mask]
-                    fg_gt = matched_gt[fg_mask]
-                    fg_deltas = all_box_deltas[i][fg_mask]
+                    fg_proposals = sampled_proposals[fg_mask]
+                    fg_gt = sampled_gt[fg_mask]
+                    fg_deltas = sampled_box_deltas[fg_mask]
                     target_deltas = encode_boxes(fg_gt, fg_proposals)
                     det_reg_loss += F.smooth_l1_loss(fg_deltas, target_deltas)
 
@@ -273,8 +309,11 @@ class StenosisTemporalDetector(nn.Module):
     def init_weights(self):
         """Xavier initialization for all non-backbone parameters."""
         for name, module in self.named_modules():
-            # Skip backbone (pretrained)
-            if name.startswith("fpe.backbone"):
+            # Skip backbone (pretrained) and channel adapter (has special 1/3 init)
+            if name.startswith("fpe.backbone") or name == "fpe.channel_adapter":
+                continue
+            # Skip RPN (initialized by torchvision)
+            if name.startswith("fpe.rpn"):
                 continue
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -284,7 +323,7 @@ class StenosisTemporalDetector(nn.Module):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Conv2d) and not name.startswith("fpe.backbone"):
+            elif isinstance(module, nn.Conv2d):
                 nn.init.xavier_uniform_(module.weight)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)

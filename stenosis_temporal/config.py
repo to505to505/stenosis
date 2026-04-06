@@ -62,7 +62,7 @@ class Config:
     epochs: int = 100
     batch_size: int = 2
     num_workers: int = 4
-    lr: float = 0.02
+    lr: float = 0.005
     momentum: float = 0.9
     weight_decay: float = 1e-4
     warmup_iters: int = 500
