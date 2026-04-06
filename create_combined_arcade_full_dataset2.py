@@ -17,7 +17,7 @@ dataset2 has 1 class (0: Stenosis) -> remap ALL to class 1 in combined dataset.
 import shutil
 from pathlib import Path
 
-BASE = Path("/workspace/stenosis/data")
+BASE = Path("/home/dsa/stenosis/data")
 
 ARCADE_SRC = BASE / "stenosis_arcade"
 DATASET2_SRC = BASE / "dataset2_split"

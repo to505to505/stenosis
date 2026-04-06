@@ -10,7 +10,7 @@ import os
 import glob
 import yaml
 
-DATASET_DIR = "/workspace/stenosis/data/combined_arcade_full_dataset2"
+DATASET_DIR = "/home/dsa/stenosis/data/combined_arcade_full_dataset2"
 
 
 def convert_labels(dataset_dir: str):
