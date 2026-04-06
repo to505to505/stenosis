@@ -24,11 +24,11 @@ class Config:
 
     # ── FPE ────────────────────────────────────────────────────────────
     C: int = 256                  # FPN output channels
-    S: int = 400                  # RPN proposals per frame
+    S: int = 128                  # RPN proposals per frame
     rpn_pre_nms_top_n_train: int = 2000
     rpn_pre_nms_top_n_test: int = 1000
-    rpn_post_nms_top_n_train: int = 400
-    rpn_post_nms_top_n_test: int = 400
+    rpn_post_nms_top_n_train: int = 128
+    rpn_post_nms_top_n_test: int = 128
     rpn_nms_thresh: float = 0.7
     rpn_fg_iou_thresh: float = 0.7
     rpn_bg_iou_thresh: float = 0.3
@@ -80,7 +80,7 @@ class Config:
     amp: bool = True
     log_interval: int = 50        # print every N iterations
     eval_interval: int = 1        # evaluate every N epochs
-    proposal_chunk_size: int = 400 # process all proposals at once (S=400)
+    proposal_chunk_size: int = 128 # process all proposals at once (S=128)
     gradient_checkpointing: bool = False  # disabled — enough VRAM headroom
 
 

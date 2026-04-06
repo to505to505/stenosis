@@ -211,8 +211,9 @@ def hungarian_match_across_frames(
         # Combined cost: negative IoU + distance (minimize)
         cost = -iou_weight * iou_matrix + dist_weight * dist_norm
 
-        # Hungarian matching
+        # Hungarian matching (replace NaN/Inf with large values)
         cost_np = cost.detach().cpu().numpy()
+        cost_np = np.nan_to_num(cost_np, nan=1e6, posinf=1e6, neginf=-1e6)
         row_idx, col_idx = linear_sum_assignment(cost_np)
 
         matched_curr = set()
@@ -443,12 +444,12 @@ class STFSModule(nn.Module):
         new_w = w * alpha
         new_h = h * alpha
 
-        expanded = torch.tensor([
+        expanded = torch.stack([
             cx - new_w / 2,
             cy - new_h / 2,
             cx + new_w / 2,
             cy + new_h / 2,
-        ], device=box.device, dtype=box.dtype)
+        ])
 
         expanded[0::2].clamp_(min=0, max=self.cfg.img_w)
         expanded[1::2].clamp_(min=0, max=self.cfg.img_h)

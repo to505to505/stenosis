@@ -29,30 +29,28 @@ class DynamicConv(nn.Module):
     Args:
         channels: Number of input/output channels.
         kernel_size: Spatial kernel size for the depth-wise conv.
-        groups: Number of groups for depth-wise convolution.
+        groups: Number of groups (not used in depth-wise mode, kept for API).
     """
 
     def __init__(self, channels: int, kernel_size: int = 3, groups: int = 4):
         super().__init__()
         self.channels = channels
         self.kernel_size = kernel_size
-        self.groups = groups
-        assert channels % groups == 0
-        self.channels_per_group = channels // groups
 
-        # Kernel generator: from global-avg-pooled features → kernel weights
-        kernel_numel = self.channels_per_group * kernel_size * kernel_size
+        # Kernel generator: from global-avg-pooled features → depthwise kernel weights
+        # Depthwise: one k×k kernel per channel → C * k * k weights
+        kernel_numel = channels * kernel_size * kernel_size
         self.kernel_gen = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(1),
             nn.Linear(channels, channels),
             nn.ReLU(inplace=True),
-            nn.Linear(channels, groups * kernel_numel),
+            nn.Linear(channels, kernel_numel),
         )
 
         # Pointwise (1×1) projection after dynamic conv
         self.proj = nn.Conv2d(channels, channels, 1)
-        self.norm = nn.GroupNorm(32, channels)
+        self.norm = nn.GroupNorm(min(32, channels), channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -64,23 +62,21 @@ class DynamicConv(nn.Module):
         """
         N, C, H, W = x.shape
         k = self.kernel_size
-        cpg = self.channels_per_group
-        G = self.groups
+        pad = k // 2
 
-        # Generate per-sample kernels: (N, G * cpg * k * k)
+        # Generate per-sample depthwise kernels: (N, C * k * k)
         kernels = self.kernel_gen(x)
-        # Reshape to (N * G, cpg, k, k) — one kernel per group per sample
-        kernels = kernels.reshape(N * G, cpg, k, k)
+        # Reshape to (N*C, 1, k, k) for depthwise conv
+        kernels = kernels.reshape(N * C, 1, k, k)
 
         # Pad input for 'same' convolution
-        pad = k // 2
         x_padded = F.pad(x, [pad, pad, pad, pad])
 
-        # Reshape to group-wise batched conv: (1, N*C, H+2p, W+2p)
+        # Reshape to (1, N*C, H+2p, W+2p) for batched depthwise conv
         x_grouped = x_padded.reshape(1, N * C, H + 2 * pad, W + 2 * pad)
 
-        # Batched group conv: groups = N * G
-        out = F.conv2d(x_grouped, kernels, groups=N * G)
+        # Depthwise conv: groups = N*C (one kernel per channel per sample)
+        out = F.conv2d(x_grouped, kernels, groups=N * C)
         out = out.reshape(N, C, H, W)
 
         out = self.proj(out)
