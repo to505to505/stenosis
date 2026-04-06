@@ -14,7 +14,7 @@ class TestConfigDefaults:
         assert cfg.num_proposals == 100
         assert cfg.decoder_layers == 6
         assert cfg.num_classes == 2
-        assert cfg.lr == 2.5e-5
+        assert cfg.lr == 1e-4
         assert cfg.weight_decay == 1e-4
 
     def test_custom_values(self):

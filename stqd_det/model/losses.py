@@ -155,6 +155,12 @@ class STQDDetCriterion(nn.Module):
         N = len(gt_boxes_per_frame)
         num_layers = len(layer_outputs)
 
+        # Force fp32 for all loss math to prevent AMP fp16 overflow
+        layer_outputs = [
+            {k: v.float() for k, v in lo.items()}
+            for lo in layer_outputs
+        ]
+
         total_cls = torch.tensor(0.0, device=device)
         total_l1 = torch.tensor(0.0, device=device)
         total_giou = torch.tensor(0.0, device=device)
@@ -217,9 +223,9 @@ class STQDDetCriterion(nn.Module):
                     )
                     layer_l1 = layer_l1 + l1
 
-                    # GIoU loss
+                    # GIoU loss (ensure fp32 for numerical stability)
                     giou = generalized_box_iou_loss(
-                        matched_pred, matched_gt, reduction="sum"
+                        matched_pred.float(), matched_gt.float(), reduction="sum"
                     )
                     layer_giou = layer_giou + giou
 
@@ -240,8 +246,10 @@ class STQDDetCriterion(nn.Module):
         loss_consistency = torch.tensor(0.0, device=device)
         if voted_count is not None:
             # L_num = (1/N) * Σ |n_boxes,n - n_r| + β
+            # Use soft (differentiable) count: sum of max-class sigmoid
+            # probabilities instead of hard threshold > 0.5
             for n in range(N):
-                n_boxes_n = (layer_outputs[-1]["cls_logits"][n].sigmoid().max(dim=-1).values > 0.5).sum().float()
+                n_boxes_n = layer_outputs[-1]["cls_logits"][n].sigmoid().max(dim=-1).values.sum()
                 loss_consistency = loss_consistency + torch.abs(n_boxes_n - voted_count)
             loss_consistency = loss_consistency / N + self.cfg.beta_consistency
 

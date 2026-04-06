@@ -75,7 +75,7 @@ class Config:
     lr: float = 1e-4              # scaled for batch_size=4 (2.5e-5 * 4)
     weight_decay: float = 1e-4    # paper spec
     warmup_iters: int = 500       # linear warmup for first 500 iterations
-    max_grad_norm: float = 5.0
+    max_grad_norm: float = 1.0
     early_stopping_patience: int = 10
 
     # ── Logging ────────────────────────────────────────────────────────

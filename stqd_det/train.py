@@ -10,6 +10,7 @@ import csv
 import os
 import sys
 import time
+import warnings
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +70,7 @@ def train_one_epoch(
         if not torch.isfinite(total_loss):
             print(f"WARNING: Non-finite loss at step {global_step}, skipping")
             optimizer.zero_grad()
+            scaler.update()  # let scaler reduce scale on failure
             global_step += 1
             continue
 
@@ -226,6 +228,14 @@ def main():
 
     scheduler = build_lr_scheduler(optimizer, cfg.warmup_iters, total_iters)
     scaler = GradScaler("cuda", enabled=cfg.amp)
+
+    # Suppress harmless LambdaLR init warning (it calls step() internally
+    # before any optimizer.step() — this is expected and benign).
+    warnings.filterwarnings(
+        "ignore",
+        message="Detected call of `lr_scheduler.step\\(\\)` before `optimizer.step\\(\\)`",
+        category=UserWarning,
+    )
 
     start_epoch = 0
     global_step = 0

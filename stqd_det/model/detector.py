@@ -117,34 +117,45 @@ class STQDDet(nn.Module):
             "total_loss": torch.tensor(0.0, device=device),
         }
 
+        # ── Step 3: SQNB for all batch elements (cheap, CPU-bound) ───
+        batch_proposals = []
+        batch_timesteps = []
         for b in range(B):
-            # Extract GT boxes per frame for this batch element
             gt_boxes = [targets[b][t]["boxes"].to(device) for t in range(T)]
-            gt_labels = [targets[b][t]["labels"].to(device) for t in range(T)]
-
-            # ── Step 3: SQNB (Poisson noise around GT) ────────────────
             noisy_proposals, timesteps, noise = self.sqnb.forward_diffusion(
                 gt_boxes, num_frames=T
             )
-            # noisy_proposals: (T, P, 4) xyxy
-            # timesteps: (T,) per-frame timesteps
+            batch_proposals.append(noisy_proposals)   # (T, P, 4)
+            batch_timesteps.append(timesteps)          # (T,)
 
-            # ── Step 4: Decoder Stage 1 ───────────────────────────────
-            # Extract FPN features for this batch element
-            batch_fpn = {}
-            for key, feat in fpn_features.items():
-                batch_fpn[key] = feat[b * T : (b + 1) * T]
+        # Concatenate across batch: (B*T, P, 4) and (B*T,)
+        all_proposals = torch.cat(batch_proposals, dim=0)
+        all_timesteps = torch.cat(batch_timesteps, dim=0)
 
-            batch_image_sizes = image_sizes[b * T : (b + 1) * T]
+        # ── Step 4: Decoder — single pass for all B*T frames ─────────
+        # Self-attention is per-frame (over P proposals), so batching
+        # B*T frames together is safe and maximises GPU utilisation.
+        stage1_outputs = self.decoder(
+            fpn_features, all_proposals, image_sizes, all_timesteps
+        )
 
-            stage1_outputs = self.decoder(
-                batch_fpn, noisy_proposals, batch_image_sizes, timesteps
-            )
+        # ── Steps 5-6: STFS + Loss per batch element ─────────────────
+        for b in range(B):
+            s, e = b * T, (b + 1) * T
 
-            # ── Step 5: STFS ──────────────────────────────────────────
-            # Get last layer predictions for STFS matching (detached —
-            # STFS matching is non-differentiable, no need to keep grad)
-            last_output = stage1_outputs[-1]
+            gt_boxes = [targets[b][t]["boxes"].to(device) for t in range(T)]
+            gt_labels = [targets[b][t]["labels"].to(device) for t in range(T)]
+
+            # Slice decoder outputs for this batch element
+            batch_outputs = []
+            for layer_out in stage1_outputs:
+                batch_outputs.append({
+                    "cls_logits": layer_out["cls_logits"][s:e],
+                    "box_pred": layer_out["box_pred"][s:e],
+                })
+
+            # STFS (no grad — only produces voted count)
+            last_output = batch_outputs[-1]
             frame_predictions = []
             for t in range(T):
                 cls_probs = last_output["cls_logits"][t].detach().sigmoid()
@@ -155,24 +166,24 @@ class STQDDet(nn.Module):
                     "labels": labels,
                 })
 
-            # Run STFS (no grad needed — only produces voted count)
+            batch_fpn = {k: v[s:e] for k, v in fpn_features.items()}
+            batch_image_sizes = image_sizes[s:e]
+
             with torch.no_grad():
                 h_tp, h_fn, h_fp, corrected_rois = self.stfs(
                     batch_fpn, frame_predictions, batch_image_sizes, T
                 )
 
-            # Compute voted count for consistency loss
-            voted_count = len(h_tp) + len(h_fn)  # expected number of real objects
+            voted_count = len(h_tp) + len(h_fn)
 
-            # Stage 1 + consistency loss
-            stage1_with_consistency = self.criterion(
-                stage1_outputs, gt_boxes, gt_labels,
+            # Loss for this batch element
+            batch_loss = self.criterion(
+                batch_outputs, gt_boxes, gt_labels,
                 voted_count=float(voted_count),
             )
 
-            # Accumulate losses
             for key in all_losses:
-                all_losses[key] = all_losses[key] + stage1_with_consistency[key]
+                all_losses[key] = all_losses[key] + batch_loss[key]
 
         # Average over batch
         for key in all_losses:
