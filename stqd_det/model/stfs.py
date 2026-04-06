@@ -22,12 +22,14 @@ from .gfe import DynamicConv
 class RoIAggregator(nn.Module):
     """Aggregates wrong RoI features using reference (right) RoI features.
 
-    Architecture:
+    Architecture (per paper Fig. 4):
       MHA(Q=wrong, K=right, V=right) → LayerNorm → DynamicConv → LayerNorm
       → FC2(ReLU(FC1(...))) → Residual Add
 
+    MHA operates on spatial tokens: each spatial position in the RoI is a
+    C-dim token, so seq_len = roi*roi and embed_dim = C.
+
     Args:
-        feat_dim: Feature dimension (C * roi * roi flattened or C for spatial).
         channels: Spatial feature channels (C).
         spatial_size: RoI spatial size (roi_output_size).
         num_heads: MHA heads.
@@ -48,13 +50,14 @@ class RoIAggregator(nn.Module):
         feat_dim = channels * spatial_size * spatial_size
 
         # MHA: wrong features attend to right features
+        # Each spatial position is a C-dim token, seq_len = roi*roi
         self.mha = nn.MultiheadAttention(
-            embed_dim=feat_dim,
+            embed_dim=channels,
             num_heads=num_heads,
             dropout=dropout,
             batch_first=True,
         )
-        self.norm1 = nn.LayerNorm(feat_dim)
+        self.norm1 = nn.LayerNorm(channels)
 
         # Dynamic Convolution (operates in spatial domain)
         self.dynamic_conv = DynamicConv(
@@ -62,7 +65,7 @@ class RoIAggregator(nn.Module):
         )
         self.norm2 = nn.LayerNorm([channels, spatial_size, spatial_size])
 
-        # Linear block: FC2(ReLU(FC1(...)))
+        # Linear block: FC2(ReLU(FC1(...))) — Eq. 20 in paper
         self.linear_block = nn.Sequential(
             nn.Linear(feat_dim, ffn_dim),
             nn.ReLU(inplace=True),
@@ -85,23 +88,23 @@ class RoIAggregator(nn.Module):
             aggregated: (K, C, roi, roi) corrected features.
         """
         K, C, rh, rw = wrong_features.shape
+        S = rh * rw  # spatial token count
         feat_dim = C * rh * rw
 
-        # Flatten for MHA
-        wrong_flat = wrong_features.reshape(K, 1, feat_dim)   # (K, 1, feat_dim)
-        right_flat = right_features.reshape(K, 1, feat_dim)   # (K, 1, feat_dim)
+        # Flatten spatial to token sequence for MHA: (K, S, C)
+        wrong_tokens = wrong_features.reshape(K, C, S).permute(0, 2, 1)  # (K, S, C)
+        right_tokens = right_features.reshape(K, C, S).permute(0, 2, 1)  # (K, S, C)
 
         # MHA: Q=wrong, K=right, V=right
-        attn_out, _ = self.mha(wrong_flat, right_flat, right_flat)
-        attn_out = self.norm1(attn_out + wrong_flat)  # residual
-        attn_out = attn_out.squeeze(1)  # (K, feat_dim)
+        attn_out, _ = self.mha(wrong_tokens, right_tokens, right_tokens)
+        attn_out = self.norm1(attn_out + wrong_tokens)  # residual, (K, S, C)
 
         # Reshape to spatial for Dynamic Conv
-        spatial = attn_out.reshape(K, C, rh, rw)
+        spatial = attn_out.permute(0, 2, 1).reshape(K, C, rh, rw)
         dc_out = self.dynamic_conv(spatial)
         dc_out = self.norm2(dc_out + spatial)  # residual
 
-        # Linear block
+        # Linear block (Eq. 20)
         dc_flat = dc_out.reshape(K, feat_dim)
         linear_out = self.linear_block(dc_flat)
         linear_out = self.dropout(linear_out)

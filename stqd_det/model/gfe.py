@@ -85,13 +85,14 @@ class DynamicConv(nn.Module):
 
 
 class GFEAttention(nn.Module):
-    """Multi-Head Attention block for contextually-grouped frame vectors.
+    """Multi-Head Attention block for contextually-grouped frame features.
 
-    For frame n, the three grouped vectors serve as:
-      K = v_{n-1}, Q = v_n, V = v_{n+1}
+    For frame n, the three grouped feature maps (flattened to spatial token
+    sequences of dim C) serve as:
+      K = f_{n-1}, Q = f_n, V = f_{n+1}
 
     Args:
-        embed_dim: Dimension of each frame's feature vector.
+        embed_dim: Channel dimension C (each spatial position is a token).
         num_heads: Number of attention heads.
         dropout: Attention dropout probability.
     """
@@ -111,25 +112,15 @@ class GFEAttention(nn.Module):
     ) -> torch.Tensor:
         """
         Args:
-            v_prev: (N, D) — previous frame token (Key).
-            v_curr: (N, D) — current frame token (Query).
-            v_next: (N, D) — next frame token (Value).
-              Here N is the number of frames being processed (can be batched).
+            v_prev: (N, S, C) — previous frame spatial tokens (Key).
+            v_curr: (N, S, C) — current frame spatial tokens (Query).
+            v_next: (N, S, C) — next frame spatial tokens (Value).
+              N = batch of frames, S = H*W spatial positions, C = channels.
 
         Returns:
-            v_enhanced: (N, D) — attention-enhanced token with residual.
+            v_enhanced: (N, S, C) — attention-enhanced tokens with residual.
         """
-        # MHA expects (batch, seq_len, dim). Each frame has seq_len=1 token,
-        # but K/V come from adjacent frames. Stack as seq_len=1 for Q,
-        # and seq_len=1 for K and V individually.
-        # Actually: Q is current, K is previous, V is next — each is a single
-        # token, so we treat this as cross-attention with seq_len=1.
-        Q = v_curr.unsqueeze(1)  # (N, 1, D)
-        K = v_prev.unsqueeze(1)  # (N, 1, D)
-        V = v_next.unsqueeze(1)  # (N, 1, D)
-
-        attn_out, _ = self.mha(Q, K, V)  # (N, 1, D)
-        attn_out = attn_out.squeeze(1)    # (N, D)
+        attn_out, _ = self.mha(v_curr, v_prev, v_next)  # (N, S, C)
 
         # Residual + LayerNorm
         v_enhanced = self.layer_norm(attn_out + v_curr)
@@ -157,16 +148,10 @@ class GFEModule(nn.Module):
         self.cfg = cfg
         C = cfg.C
         spatial = cfg.top_fpn_spatial  # H = W = 16 for 512 input
-        token_dim = C * spatial * spatial  # 256 * 16 * 16 = 65536
 
-        # Project to a manageable attention dimension
-        self.attn_dim = min(token_dim, 512)
-        self.token_proj = nn.Linear(token_dim, self.attn_dim)
-        self.token_unproj = nn.Linear(self.attn_dim, token_dim)
-
-        # Multi-Head Attention over projected tokens
+        # Multi-Head Attention over spatial tokens (each token is C-dim)
         self.attention = GFEAttention(
-            embed_dim=self.attn_dim,
+            embed_dim=C,
             num_heads=cfg.gfe_num_heads,
             dropout=cfg.gfe_dropout,
         )
@@ -178,7 +163,7 @@ class GFEModule(nn.Module):
             groups=cfg.gfe_dc_groups,
         )
 
-        # Final FC + LayerNorm for DC residual
+        # Final FC + LayerNorm for DC residual (Eq. 7)
         self.dc_fc = nn.Sequential(
             nn.Conv2d(C, C, 1),
             nn.ReLU(inplace=True),
@@ -214,32 +199,29 @@ class GFEModule(nn.Module):
         for b in range(B):
             frame_feats = feat_5d[b]  # (N, C, H, W)
 
-            # Step 1: Tokenize — flatten spatial dims
-            tokens = frame_feats.reshape(N, C * H * W)  # (N, token_dim)
+            # Step 1: Tokenize — flatten spatial dims to token sequence
+            # Each spatial position is a C-dim token: (N, H*W, C)
+            tokens = frame_feats.reshape(N, C, H * W).permute(0, 2, 1)  # (N, S, C)
 
-            # Step 2: Project to attention dimension
-            tokens_proj = self.token_proj(tokens)  # (N, attn_dim)
-
-            # Step 3: Contextual grouping + MHA for each frame
+            # Step 2: Contextual grouping + MHA for each frame
             enhanced_tokens = []
             for n in range(N):
                 prev_idx = max(0, n - 1)
                 next_idx = min(N - 1, n + 1)
 
-                v_prev = tokens_proj[prev_idx].unsqueeze(0)  # (1, attn_dim)
-                v_curr = tokens_proj[n].unsqueeze(0)          # (1, attn_dim)
-                v_next = tokens_proj[next_idx].unsqueeze(0)   # (1, attn_dim)
+                v_prev = tokens[prev_idx].unsqueeze(0)  # (1, S, C)
+                v_curr = tokens[n].unsqueeze(0)          # (1, S, C)
+                v_next = tokens[next_idx].unsqueeze(0)   # (1, S, C)
 
-                v_enhanced = self.attention(v_prev, v_curr, v_next)  # (1, attn_dim)
+                v_enhanced = self.attention(v_prev, v_curr, v_next)  # (1, S, C)
                 enhanced_tokens.append(v_enhanced)
 
-            enhanced_tokens = torch.cat(enhanced_tokens, dim=0)  # (N, attn_dim)
+            enhanced_tokens = torch.cat(enhanced_tokens, dim=0)  # (N, S, C)
 
-            # Step 4: Unproject back to full token dim and reshape to spatial
-            tokens_full = self.token_unproj(enhanced_tokens)  # (N, C*H*W)
-            feat_attn = tokens_full.reshape(N, C, H, W)
+            # Step 3: Reshape back to spatial feature maps
+            feat_attn = enhanced_tokens.permute(0, 2, 1).reshape(N, C, H, W)
 
-            # Step 5: Dynamic Convolution + residual
+            # Step 4: Dynamic Convolution + residual (Eq. 7)
             feat_dc = self.dynamic_conv(feat_attn)            # (N, C, H, W)
             feat_dc = self.dc_norm(self.dc_fc(feat_dc) + feat_attn)
 
