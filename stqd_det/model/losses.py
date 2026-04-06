@@ -9,6 +9,7 @@ Combines:
 Uses Hungarian matching to assign predictions to ground truth.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,11 +34,15 @@ class HungarianMatcher(nn.Module):
         cost_class: float = 2.0,
         cost_bbox: float = 5.0,
         cost_giou: float = 2.0,
+        img_w: int = 512,
+        img_h: int = 512,
     ):
         super().__init__()
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
         self.cost_giou = cost_giou
+        self.img_w = img_w
+        self.img_h = img_h
 
     @torch.no_grad()
     def forward(
@@ -72,8 +77,14 @@ class HungarianMatcher(nn.Module):
         # Cost for each (pred, gt) pair based on gt class
         cost_class = -cls_probs[:, gt_labels]  # (P, M) — negative prob
 
-        # L1 box cost
-        cost_bbox = torch.cdist(pred_boxes, gt_boxes, p=1)  # (P, M)
+        # L1 box cost (normalized to [0,1])
+        img_scale = torch.tensor(
+            [self.img_w, self.img_h, self.img_w, self.img_h],
+            device=pred_boxes.device, dtype=pred_boxes.dtype,
+        )
+        cost_bbox = torch.cdist(
+            pred_boxes / img_scale, gt_boxes / img_scale, p=1
+        )  # (P, M)
 
         # GIoU cost
         iou = box_iou(pred_boxes, gt_boxes)  # (P, M)
@@ -86,8 +97,9 @@ class HungarianMatcher(nn.Module):
             + self.cost_giou * cost_giou
         )
 
-        # Hungarian matching
+        # Hungarian matching — sanitize to prevent invalid entries
         C_np = C.detach().cpu().numpy()
+        C_np = np.nan_to_num(C_np, nan=1e6, posinf=1e6, neginf=-1e6)
         row_idx, col_idx = linear_sum_assignment(C_np)
 
         return (
@@ -112,6 +124,8 @@ class STQDDetCriterion(nn.Module):
             cost_class=2.0,
             cost_bbox=cfg.lambda_l1,
             cost_giou=cfg.lambda_giou,
+            img_w=cfg.img_w,
+            img_h=cfg.img_h,
         )
         self.num_classes = cfg.num_classes
 
@@ -190,8 +204,17 @@ class STQDDetCriterion(nn.Module):
                     matched_pred = pred_box[pred_idx]
                     matched_gt = gt_boxes[gt_idx]
 
-                    # L1 loss
-                    l1 = F.l1_loss(matched_pred, matched_gt, reduction="sum")
+                    # L1 loss (normalize to [0,1] to keep loss scale manageable)
+                    img_scale = torch.tensor(
+                        [self.cfg.img_w, self.cfg.img_h,
+                         self.cfg.img_w, self.cfg.img_h],
+                        device=device, dtype=matched_pred.dtype,
+                    )
+                    l1 = F.l1_loss(
+                        matched_pred / img_scale,
+                        matched_gt / img_scale,
+                        reduction="sum",
+                    )
                     layer_l1 = layer_l1 + l1
 
                     # GIoU loss

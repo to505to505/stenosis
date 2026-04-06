@@ -245,12 +245,14 @@ class StenosisDecoder(nn.Module):
         w = (boxes[..., 2] - boxes[..., 0]).clamp(min=1.0)
         h = (boxes[..., 3] - boxes[..., 1]).clamp(min=1.0)
 
-        # Apply deltas
+        # Apply deltas (clamp to prevent numerical blowup)
         dx, dy, dw, dh = deltas.unbind(-1)
+        dx = dx.clamp(-4.0, 4.0)
+        dy = dy.clamp(-4.0, 4.0)
         new_cx = cx + dx * w
         new_cy = cy + dy * h
-        new_w = w * torch.exp(dw.clamp(max=4.0))
-        new_h = h * torch.exp(dh.clamp(max=4.0))
+        new_w = w * torch.exp(dw.clamp(-4.0, 4.0))
+        new_h = h * torch.exp(dh.clamp(-4.0, 4.0))
 
         # Convert back to xyxy
         x1 = new_cx - new_w / 2

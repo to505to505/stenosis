@@ -1,0 +1,291 @@
+@article{aipoweredrealtime,
+author = {Tang, Kuo-Ting and Shih, Jhih-Yuan and Hsu, Pochao and Liao, Chia-Te and Chiu, I.-Min and Chen, Zhih-Cherng and Huang, Han-Lung and Yang, Liang-Chuan and Liu, Chung and Wang, Joung and Chang, Chieh-Hung and Huang, Jen-Sheng and Hsu, Yuan-Hsing and Tsai, Meng-Che and Chen, Nien-Lun and Huang, Shih-Hsu and Chen, Kun-Sung and Chang, Wei-Ting},
+year = {2025},
+month = {06},
+pages = {},
+title = {Artificial Intelligence Powered Real-Time Coronary Stenosis Recognition and Quantification in Angiography},
+journal = {Journal of Imaging Informatics in Medicine},
+doi = {10.1007/s10278-025-01578-4}
+}
+
+
+@ARTICLE{fvcm,
+    
+AUTHOR={Cong, Chao  and Kato, Yoko  and Vasconcellos, Henrique Doria De  and Ostovaneh, Mohammad R.  and Lima, Joao A. C.  and Ambale-Venkatesh, Bharath },
+           
+TITLE={Deep learning-based end-to-end automated stenosis classification and localization on catheter coronary angiography},
+          
+JOURNAL={Frontiers in Cardiovascular Medicine},
+          
+VOLUME={Volume 10 - 2023},
+  
+YEAR={2023},
+  
+URL={https://www.frontiersin.org/journals/cardiovascular-medicine/articles/10.3389/fcvm.2023.944135},
+  
+DOI={10.3389/fcvm.2023.944135},
+  
+ISSN={2297-055X},
+  
+ABSTRACT={Background:  Automatic coronary angiography (CAG) assessment may help in faster screening and diagnosis of stenosis in patients with atherosclerotic disease. We aimed to provide an end-to-end workflow that separates cases with normal or mild stenoses from those with higher stenosis severities to facilitate safety screening of a large volume of the CAG images.
+Methods: A deep learning-based end-to-end workflow was employed as follows: 1) Candidate frame selection from CAG videograms with CNN+ Long Short Term Memory (LSTM) network, 2) Stenosis classification with Inception-v3 using 2 or 3 categories (<25%, >25%, and/or total occlusion) with and without redundancy training, and 3) Stenosis localization with two methods of class activation map (CAM) and anchor-based feature pyramid network (FPN). Overall 13744 frames from 230 studies were used for the stenosis classification training and 4-fold cross-validation for image-, artery-, and per-patient-level. For the stenosis localization training and 4-fold cross-validation, 690 images with >25% stenosis were used. 
+Results: Our model achieved an accuracy of 0.85, sensitivity of 0.96, and AUC of 0.86 in per-patient level stenosis classification. Redundancy training was effective to improve classification performance. Stenosis position localization was adequate with better quantitative results in anchor-based FPN model, achieving global-sensitivity for left coronary artery (LCA) and right coronary artery (RCA) of 0.68 and 0.70. 
+Conclusion: We demonstrated a fully-automatic end-to-end deep learning-based workflow that eliminates the vessel extraction and segmentation step in coronary artery stenosis classification and localization on CAG images. This tool may be useful to facilitate safety screening in high-volume centers and in clinical trial settings.}}
+
+
+@article{molenar,
+author = {Mitchel A. Molenaar  and Elsa Hebbo  and Jasper L. Selder  and Nikoloz Shekiladze  and Pratik B. Sandesara  and William J. Nicholson  and Folkert W. Asselbergs  and Syed Ahmad  and Daniel A. Gold  and Shaimaa M. Sakr  and Javier Oliván Bescós  and Vincent Auvray  and Martijn S. van Mourik  and Alexander Haak  and Yida Zhao  and Jelle D. Nieuwendijk  and Mark J. Schuuring  and Berto J. Bouma  and Steven A.J. Chamuleau  and Niels J. Verouden },
+title = {Deep Learning–Based Segmentation of Coronary Arteries and Stenosis Detection in X-Ray Coronary Angiography},
+journal = {JACC: Advances},
+volume = {4},
+number = {12\_Part\_2},
+pages = {102360},
+year = {2025},
+doi = {10.1016/j.jacadv.2025.102360},
+
+URL = {https://www.jacc.org/doi/abs/10.1016/j.jacadv.2025.102360},
+eprint = {https://www.jacc.org/doi/pdf/10.1016/j.jacadv.2025.102360}
+
+}
+
+@misc{popov2022reviewmodernapproachescoronary,
+      title={A Review of Modern Approaches for Coronary Angiography Imaging Analysis}, 
+      author={Maxim Popov and Temirgali Aimyshev and Eldar Ismailov and Ablay Bulegenov and Siamac Fazli},
+      year={2022},
+      eprint={2209.13997},
+      archivePrefix={arXiv},
+      primaryClass={eess.IV},
+      url={https://arxiv.org/abs/2209.13997}, 
+}
+
+@article{ZHAO2021104667,
+title = {Automatic extraction and stenosis evaluation of coronary arteries in invasive coronary angiograms},
+journal = {Computers in Biology and Medicine},
+volume = {136},
+pages = {104667},
+year = {2021},
+issn = {0010-4825},
+doi = {https://doi.org/10.1016/j.compbiomed.2021.104667},
+url = {https://www.sciencedirect.com/science/article/pii/S0010482521004613},
+author = {Chen Zhao and Aviral Vij and Saurabh Malhotra and Jinshan Tang and Haipeng Tang and Drew Pienta and Zhihui Xu and Weihua Zhou},
+keywords = {Coronary artery disease, Invasive coronary angiography, Image segmentation, Deep learning, U-net},
+abstract = {Background
+Coronary artery disease (CAD) is the leading cause of death in the United States (US) and a major contributor to healthcare cost. Accurate segmentation of coronary arteries and detection of stenosis from invasive coronary angiography (ICA) are crucial in clinical decision making.
+Purpose
+We aim to develop an automatic method to extract coronary arteries by deep learning and detect arterial stenosis from ICAs.
+Methods
+In this study, a deep learning model which integrates a feature pyramid with a U-Net++ model was developed to automatically segment coronary arteries in ICAs. A compound loss function which contains Dice loss, dilated Dice loss, and L2 regularization was utilized to train the proposed segmentation model. Following the segmentation, an algorithm which extracts vascular centerlines, calculates the diameters, and measures the stenotic levels, was developed to detect arterial stenosis.
+Results and conclusions
+In the dataset consisting of 314 ICAs obtained from 99 patients, the segmentation model achieved an average Dice score of 0.8899, a sensitivity of 0.8595, and a specificity of 0.9960. In addition, the stenosis detection algorithm achieved a true positive rate of 0.6840 and a positive predictive value of 0.6998 on all types of stenosis, which has great promise to advance to clinical uses and could provide auxiliary suggestions for CAD diagnosis and treatment.}
+}
+
+
+
+
+
+@article{cardiovascular,
+author = {Hao Ren and Fengshi Jing and Yan Fang and Weibin Cheng},
+title ={Artificial intelligence techniques for cardiovascular disease diagnosis via X-ray sensor-based coronary angiography: A bibliometric and systematic review},
+
+journal = {DIGITAL HEALTH},
+volume = {12},
+number = {},
+pages = {20552076261417142},
+year = {2026},
+doi = {10.1177/20552076261417142},
+
+URL = { 
+    
+        https://doi.org/10.1177/20552076261417142
+    
+    
+
+},
+eprint = { 
+    
+        https://doi.org/10.1177/20552076261417142
+    
+    
+
+}
+,
+    abstract = { Purpose To systematically evaluate the application of artificial intelligence (AI) techniques in X-ray sensor-based coronary angiography for cardiovascular disease (CVD) diagnosis, mapping publication trends, geographic and topical hotspots via bibliometric analysis, and critically reviewing disease-specific AI methodologies and performance to inform future research and clinical integration. Non-angiographic inputs were considered only when angiography served as the reference standard or when the algorithm was explicitly integrated into an angiography-based workflow.Methods A two-part approach was undertaken. In Part I, we performed a bibliometric analysis of English-language original research and reviews published between 1 June 2010 and 1 June 2025, retrieved from Web of Science, Scopus, and PubMed. Records (n = 123) were screened using a PRISMA flowchart and analyzed with CiteSpace v6.3.R1 to identify annual publication trends, country contributions, co-authorship networks, and keyword clusters. In Part II, we conducted a structured literature review of the AI methods reported in these studies, organizing findings by three major clinical categories-acute myocardial infarction, ischemic cardiomyopathy, and unstable angina-and extracting model architectures, data sources, and diagnostic performance metrics (accuracy, sensitivity, specificity, and AUC).Results Bibliometric analysis revealed three publication phases: a formative period (2010–2017) with <3 papers/year; rapid growth (2018–2021) culminating in a peak of 28 papers in 2022; and sustained interest into 2025. The United States (n = 39) and China (n = 34) led contributions, and keyword clustering highlighted central themes around “artificial intelligence,” “coronary artery disease,” and “computed tomography angiography.” In disease-specific review, convolutional neural networks (CNNs) and CNN–LSTM hybrids predominated, achieving AUCs from 0.724 to 0.997: for acute myocardial infarction detection, accuracies of 90\%–95\% and AUCs up to 0.99; for ischemic cardiomyopathy differentiation, accuracies of 75\%–98\% and AUCs up to 0.93; and for unstable angina prediction, overall accuracies of 89\%–95\%. Classical machine-learning models (XGBoost and random forest) also showed robust performance (AUC 0.77–0.94). Key challenges include dataset heterogeneity, limited multicenter validation, and model interpretability.Conclusion AI, particularly deep-learning frameworks, substantially enhances the accuracy and efficiency of CVD diagnosis via X-ray coronary angiography. However, current evidence is constrained by small single-center datasets, limited external validation, inconsistent leakage safeguards, and scarce calibration/decision-curve reporting. To advance clinical adoption, future efforts should emphasize large-scale, multicenter validation studies, development of explainable AI models, and seamless integration into cardiology workflows. }
+}
+
+
+@inproceedings{attentionstenosis,
+author = {Stralen, Pedro Van and Rodrigues, Dinis L. and Oliveira, Arlindo L. and Menezes, Miguel N. and Pinto, Fausto J.},
+title = {Stenosis Detection in X-ray Coronary Angiography with Deep Neural Networks Leveraged by Attention Mechanisms},
+year = {2023},
+isbn = {9781450396868},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3569192.3569212},
+doi = {10.1145/3569192.3569212},
+abstract = {Coronary artery disease (CAD) is one of the most prevalent causes of death worldwide. The automatic detection of coronary artery stenosis on X-ray images is important in coronary heart disease diagnosis. Coronary artery disease is caused by atherosclerotic plaques with subsequent stenosis (e.g. narrowing) of the coronary arteries. This makes the heart work harder, risking failure. Automated identification of stenosis may be used for triage or as a second reader in clinical practice, providing a valuable tool for cardiologists. In this paper, we evaluate the detection of stenosis in X-ray coronary angiography images with novel object detection methods based on deep neural networks. We trained and tested three promising object detectors based on different neural network architectures leveraging attention mechanisms (EfficientDet, RetinaNet ResNet-50- FPN, and Faster R-CNN ResNet-101) using clinical angiography data of 438 patients. The metrics obtained on this dataset, have shown an advantage of EfficientDet over alternative approaches, achieving a mean average precision of 0.67 in the task of detecting stenosis in X-Ray angiographies. This result provides evidence that attention mechanisms improve the performance of convolutional neural networks in a medical imaging context.},
+booktitle = {Proceedings of the 9th International Conference on Bioinformatics Research and Applications},
+pages = {123–128},
+numpages = {6},
+keywords = {Attention mechanisms, Convolutional neural network, Coronary artery disease, Feature extraction, Image resolution, Invasive coronary angiography, Object detection, Optimization, Stenosis detection},
+location = {Berlin, Germany},
+series = {ICBRA '22}
+}
+
+
+@article{MOON2021105819,
+title = {Automatic stenosis recognition from coronary angiography using convolutional neural networks},
+journal = {Computer Methods and Programs in Biomedicine},
+volume = {198},
+pages = {105819},
+year = {2021},
+issn = {0169-2607},
+doi = {https://doi.org/10.1016/j.cmpb.2020.105819},
+url = {https://www.sciencedirect.com/science/article/pii/S0169260720316527},
+author = {Jong Hak Moon and Da Young Lee and Won Chul Cha and Myung Jin Chung and Kyu-Sung Lee and Baek Hwan Cho and Jin Ho Choi},
+keywords = {Coronary angiography, Coronary artery stenosis, Deep learning, Stenosis recognition, Automated screening},
+abstract = {Background and objective
+Coronary artery disease, which is mostly caused by atherosclerotic narrowing of the coronary artery lumen, is a leading cause of death. Coronary angiography is the standard method to estimate the severity of coronary artery stenosis, but is frequently limited by intra- and inter-observer variations. We propose a deep-learning algorithm that automatically recognizes stenosis in coronary angiographic images.
+Methods
+The proposed method consists of key frame detection, deep learning model training for classification of stenosis on each key frame, and visualization of the possible location of the stenosis. Firstly, we propose an algorithm that automatically extracts key frames essential for diagnosis from 452 right coronary artery angiography movie clips. Our deep learning model is then trained with image-level annotations to classify the areas narrowed by over 50 %. To make the model focus on the salient features, we apply a self-attention mechanism. The stenotic locations are visualized using the activated area of feature maps with gradient-weighted class activation mapping.
+Results
+The automatically detected key frame was very close to the manually selected key frame (average distance (1.70 ± 0.12) frame per clip). The model was trained with key frames on internal datasets, and validated with internal and external datasets. Our training method achieved high frame-wise area-under-the-curve of 0.971, frame-wise accuracy of 0.934, and clip-wise accuracy of 0.965 in the average values of cross-validation evaluations. The external validation results showed high performances with the mean frame-wise area-under-the-curve of (0.925 and 0.956) in the single and ensemble model, respectively. Heat map visualization shows the location for different types of stenosis in both internal and external data sets. With the self-attention mechanism, the stenosis could be precisely localized, which helps to accurately classify the stenosis by type.
+Conclusions
+Our automated classification algorithm could recognize and localize coronary artery stenosis highly accurately. Our approach might provide the basis for a screening and assistant tool for the interpretation of coronary angiography.}
+}
+
+@ARTICLE{STQD-Det,
+  author={Li, Xinyu and Ai, Danni and Song, Hong and Fan, Jingfan and Fu, Tianyu and Xiao, Deqiang and Wang, Yining and Yang, Jian},
+  journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
+  title={STQD-Det: Spatio-Temporal Quantum Diffusion Model for Real-Time Coronary Stenosis Detection in X-Ray Angiography}, 
+  year={2024},
+  volume={46},
+  number={12},
+  pages={9908-9920},
+  keywords={Noise;Diffusion models;Diffusion processes;Image segmentation;Feature extraction;Object detection;Noise reduction;Diffusion model;quantum noise;spatio-temporal feature sharing;stenosis detection;video object detection},
+  doi={10.1109/TPAMI.2024.3430839}}
+
+
+
+@article{menezes2023,
+  title = {Coronary X-ray angiography segmentation using Artificial Intelligence: a multicentric validation study of a deep learning model},
+  author = {Nobre Menezes, Miguel and Silva, Jo{\~a}o Louren{\c{c}}o and Silva, Beatriz and Rodrigues, Tiago and Guerreiro, Cl{\'{a}}udio and Guedes, Jo{\~a}o Pedro and Santos, Manuel Oliveira and Oliveira, Arlindo L. and Pinto, Fausto J.},
+  journal = {The International Journal of Cardiovascular Imaging},
+  year = {2023},
+  volume = {39},
+  number = {7},
+  pages = {1385--1396},
+  doi = {10.1007/s10554-023-02839-5},
+  url = {https://doi.org/10.1007/s10554-023-02839-5},
+  issn = {1875-8312},
+  abstract = {We previously developed an artificial intelligence (AI) model for automatic coronary angiography (CAG) segmentation, using deep learning. To validate this approach, the model was applied to a new dataset and results are reported.}
+}
+
+@article{HAN2023106546,
+title = {Coronary artery stenosis detection via proposal-shifted spatial-temporal transformer in X-ray angiography},
+journal = {Computers in Biology and Medicine},
+volume = {153},
+pages = {106546},
+year = {2023},
+issn = {0010-4825},
+doi = {https://doi.org/10.1016/j.compbiomed.2023.106546},
+url = {https://www.sciencedirect.com/science/article/pii/S0010482523000112},
+author = {Tao Han and Danni Ai and Xinyu Li and Jingfan Fan and Hong Song and Yining Wang and Jian Yang},
+keywords = {Stenosis detection, X-ray angiography, Coronary artery stenosis, Vision transformer, Spatio-temporal feature aggregation},
+abstract = {Accurate detection of coronary artery stenosis in X-ray angiography (XRA) images is crucial for the diagnosis and treatment of coronary artery disease. However, stenosis detection remains a challenging task due to complicated vascular structures, poor imaging quality, and fickle lesions. While devoted to accurate stenosis detection, most methods are inefficient in the exploitation of spatio-temporal information of XRA sequences, leading to a limited performance on the task. To overcome the problem, we propose a new stenosis detection framework based on a Transformer-based module to aggregate proposal-level spatio-temporal features. In the module, proposal-shifted spatio-temporal tokenization (PSSTT) scheme is devised to gather spatio-temporal region-of-interest (RoI) features for obtaining visual tokens within a local window. Then, the Transformer-based feature aggregation (TFA) network takes the tokens as the inputs to enhance the RoI features by learning the long-range spatio-temporal context for final stenosis prediction. The effectiveness of our method was validated by conducting qualitative and quantitative experiments on 233 XRA sequences of coronary artery. Our method achieves a high F1 score of 90.88%, outperforming other 15 state-of-the-art detection methods. It demonstrates that our method can perform accurate stenosis detection from XRA images due to the strong ability to aggregate spatio-temporal features.}
+}
+
+@article{huang2026vasomim,
+  title = {Vascular Anatomy-aware Self-supervised Pre-training for X-ray Angiogram Analysis},
+  author = {Huang, De-Xing and Yu, Chaohui and Zhou, Xiao-Hu and Xiang, Tian-Yu and Zhang, Qin-Yi and Gui, Mei-Jiang and Ma, Rui-Ze and Wang, Chen-Yu and Xiao, Nu-Fang and Wang, Fan and Hou, Zeng-Guang},
+  journal = {arXiv preprint arXiv:2602.11536v1},
+  year = {2026},
+  url = {https://github.com/Dxhuang-CASIA/XA-SSL}
+}
+
+@article{JUNGIEWICZ2023120234,
+title = {Vision Transformer in stenosis detection of coronary arteries},
+journal = {Expert Systems with Applications},
+volume = {228},
+pages = {120234},
+year = {2023},
+issn = {0957-4174},
+doi = {https://doi.org/10.1016/j.eswa.2023.120234},
+url = {https://www.sciencedirect.com/science/article/pii/S0957417423007364},
+author = {Michał Jungiewicz and Piotr Jastrzębski and Piotr Wawryka and Karol Przystalski and Karol Sabatowski and Stanisław Bartuś},
+keywords = {Convolution neural networks, Coronary angiography, Inception network, Vision Transformer, Sharpness-Aware Minimization},
+abstract = {About 380 thousand people in the United States die each year because of coronary artery disease. About 2 in 10 deaths from CAD happen in adults less than 65 years old. Early detection of blocked arteries can prevent serious surgeries and decrease the number of deaths. Coronary angiography, as one of the methods for diagnosing the state of the arteries, is a complex and invasive procedure. Neural networks can be used to support physicians in the diagnostic process and improve stenoses detection effectiveness. In this paper, we compare different variants of the Inception Network and the Vision Transformer in a stenosis detection task that, in our case, is a binary classification problem. The data set used in the experiments consists of small fragments extracted from coronary angiography videos. Furthermore, we analyze the impact of different percentages of arteries in fragments without stenosis on model performance and show that the data set configuration plays an important role. As the fragment images are small, we analyzed the Sharpness-Aware Minimization together with the Visual Transformers. We employ explainable AI methods to understand the differences in classification performance between selected models. Our results show that convolutional neural networks generally perform better than transformer-based architectures, but perform slightly worse if the Visual Transformer model is supported by the Sharpness-Aware Minimization method. While increasing the percentage of arteries in non-stenosis class, the F1 median decreases by 2.3, 5.4, and 2.2 for the Inception, ViT, and SAM-ViT models. The F1 mean decreases by 3.4, 4.8, and 2.3. The SAM-ViT is more stable compared to other models and based on the F1 mean outperforms other models. This indicates the usefulness of ViT in medical applications, especially in the analysis of coronary angiography.}
+}
+
+
+@misc{zohranyan2024drsamendtoendframeworkvascular,
+      title={Dr-SAM: An End-to-End Framework for Vascular Segmentation, Diameter Estimation, and Anomaly Detection on Angiography Images}, 
+      author={Vazgen Zohranyan and Vagner Navasardyan and Hayk Navasardyan and Jan Borggrefe and Shant Navasardyan},
+      year={2024},
+      eprint={2404.17029},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2404.17029}, 
+}
+
+
+@misc{lin2025deepselfknowledgedistillationhierarchical,
+      title={Deep Self-knowledge Distillation: A hierarchical supervised learning for coronary artery segmentation}, 
+      author={Mingfeng Lin},
+      year={2025},
+      eprint={2509.03173},
+      archivePrefix={arXiv},
+      primaryClass={eess.IV},
+      url={https://arxiv.org/abs/2509.03173}, 
+}
+
+
+@article{PU2023106493,
+title = {Semi-supervised segmentation of coronary DSA using mixed networks and multi-strategies},
+journal = {Computers in Biology and Medicine},
+volume = {156},
+pages = {106493},
+year = {2023},
+issn = {0010-4825},
+doi = {https://doi.org/10.1016/j.compbiomed.2022.106493},
+url = {https://www.sciencedirect.com/science/article/pii/S001048252201201X},
+author = {Yao Pu and Qinghua Zhang and Cheng Qian and Quan Zeng and Na Li and Lijuan Zhang and Shoujun Zhou and Gang Zhao},
+keywords = {Semi-supervised, Inception-SwinUnet, Pyramid-consistency learning, Confidence learning},
+abstract = {The coronary arteries supply blood to the myocardium, which originate from the root of the aorta and mainly branch into the left and right. X-ray digital subtraction angiography (DSA) is a technique for evaluating coronary artery plaques and narrowing, that is widely used because of its time efficiency and cost-effectiveness. However, automated coronary vessel classification and segmentation remains challenging using a little data. Therefore, the purpose of this study is twofold: one is to propose a more robust method for vessel segmentation, the other is to provide a solution that is feasible with a small amount of labeled data. Currently, there are three main types of vessel segmentation methods, i.e., graphical- and statistical-based; clustering theory based, and deep learning-based methods for pixel-by-pixel probabilistic prediction, among which the last method is the mainstream with high accuracy and automation. Under this trend, an Inception-SwinUnet (ISUnet) network combining the convolutional neural network and Transformer basic module was proposed in this paper. Considering that data-driven fully supervised learning (FSL) segmentation methods require a large set of paired data with high-quality pixel-level annotation, which is expertise-demanding and time-consuming, we proposed a Semi-supervised Learning (SSL) method to achieve better performance with a small amount of labeled and unlabeled data. Different from the classical SSL method, i.e., Mean-Teacher, our method used two different networks for cross-teaching as the backbone. Meanwhile, inspired by deep supervision and confidence learning (CL), two effective strategies for SSL were adopted, which were denominated Pyramid-consistency Learning (PL) and Confidence Learning (CL), respectively. Both were designed to filter the noise and improve the credibility of pseudo labels generated by unlabeled data. Compared with existing methods, ours achieved superior segmentation performance over other FSL and SSL ones by using data with a small equal number of labels. Code is available in https://github.com/Allenem/SSL4DSA.}
+}
+
+
+@article{JUNGIEWICZ2023120234,
+title = {Vision Transformer in stenosis detection of coronary arteries},
+journal = {Expert Systems with Applications},
+volume = {228},
+pages = {120234},
+year = {2023},
+issn = {0957-4174},
+doi = {https://doi.org/10.1016/j.eswa.2023.120234},
+url = {https://www.sciencedirect.com/science/article/pii/S0957417423007364},
+author = {Michał Jungiewicz and Piotr Jastrzębski and Piotr Wawryka and Karol Przystalski and Karol Sabatowski and Stanisław Bartuś},
+keywords = {Convolution neural networks, Coronary angiography, Inception network, Vision Transformer, Sharpness-Aware Minimization},
+abstract = {About 380 thousand people in the United States die each year because of coronary artery disease. About 2 in 10 deaths from CAD happen in adults less than 65 years old. Early detection of blocked arteries can prevent serious surgeries and decrease the number of deaths. Coronary angiography, as one of the methods for diagnosing the state of the arteries, is a complex and invasive procedure. Neural networks can be used to support physicians in the diagnostic process and improve stenoses detection effectiveness. In this paper, we compare different variants of the Inception Network and the Vision Transformer in a stenosis detection task that, in our case, is a binary classification problem. The data set used in the experiments consists of small fragments extracted from coronary angiography videos. Furthermore, we analyze the impact of different percentages of arteries in fragments without stenosis on model performance and show that the data set configuration plays an important role. As the fragment images are small, we analyzed the Sharpness-Aware Minimization together with the Visual Transformers. We employ explainable AI methods to understand the differences in classification performance between selected models. Our results show that convolutional neural networks generally perform better than transformer-based architectures, but perform slightly worse if the Visual Transformer model is supported by the Sharpness-Aware Minimization method. While increasing the percentage of arteries in non-stenosis class, the F1 median decreases by 2.3, 5.4, and 2.2 for the Inception, ViT, and SAM-ViT models. The F1 mean decreases by 3.4, 4.8, and 2.3. The SAM-ViT is more stable compared to other models and based on the F1 mean outperforms other models. This indicates the usefulness of ViT in medical applications, especially in the analysis of coronary angiography.}
+}
+
+
+@article{PANG2021101900,
+title = {Stenosis-DetNet: Sequence consistency-based stenosis detection for X-ray coronary angiography},
+journal = {Computerized Medical Imaging and Graphics},
+volume = {89},
+pages = {101900},
+year = {2021},
+issn = {0895-6111},
+doi = {https://doi.org/10.1016/j.compmedimag.2021.101900},
+url = {https://www.sciencedirect.com/science/article/pii/S0895611121000483},
+author = {Kun Pang and Danni Ai and Huihui Fang and Jingfan Fan and Hong Song and Jian Yang},
+keywords = {X-ray coronary angiography, Stenosis detection, Object detection network, Sequence information},
+abstract = {Background
+The automatic detection of coronary artery stenosis on X-ray images is important in coronary heart disease diagnosis. Conventional methods cannot accurately detect all stenosis areas because of heartbeat, respiratory movements and weak vascular features in single-frame contrast images.
+Method
+This paper proposes the use of Stenosis-DetNet, which is a method based on object detection networks. A sequence feature fusion module and a sequence consistency alignment module are designed to maximize temporal information to achieve accurate detection results. The sequence feature fusion module fuses all candidate box features and uses the temporal information to enhance these features. The sequence consistency alignment module optimizes the initial results by using the coronary artery displacement information and image features of the adjacent images and leads to the final detection of coronary artery stenosis.
+Results
+In the experiment, 166 X-ray image sequences were used for training and testing. Compared with the three existing stenosis detection methods, the precision and sensitivity of Stensis-DetNet were 94.87 % and 82.22 %, respectively, which were better than those of the other three methods.
+Conclusion
+Our proposed method effectively suppressed the false positive and false negative results of stenosis detection in sequence angiography images. It was superior to the state-of-art methods.}
+}
