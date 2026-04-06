@@ -71,7 +71,7 @@ class Config:
     # ── Training ───────────────────────────────────────────────────────
     epochs: int = 50
     batch_size: int = 1           # exactly 1 (9-frame sequence)
-    num_workers: int = 4
+    num_workers: int = 8
     lr: float = 2.5e-5            # paper spec
     weight_decay: float = 1e-4    # paper spec
     warmup_iters: int = 500       # linear warmup for first 500 iterations

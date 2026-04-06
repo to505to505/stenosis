@@ -142,11 +142,28 @@ class STQDDetDataset(Dataset):
         self._double = split == "train"
         effective = len(self.windows) * (2 if self._double else 1)
 
+        # Pre-load all images into RAM to avoid repeated disk reads.
+        # Sliding windows overlap heavily (8 of 9 frames shared), so
+        # caching saves ~8× disk I/O.
+        self._img_cache: dict[str, np.ndarray] = {}
+        all_paths = set()
+        for w in self.windows:
+            for p in w:
+                all_paths.add(str(p))
+        for p in all_paths:
+            img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                if img.shape[0] != cfg.img_h or img.shape[1] != cfg.img_w:
+                    img = cv2.resize(img, (cfg.img_w, cfg.img_h),
+                                     interpolation=cv2.INTER_LINEAR)
+                self._img_cache[p] = img
+
         print(
             f"[{split}] {len(sequences)} sequences, "
             f"{sum(len(s[2]) for s in sequences)} frames, "
             f"{len(self.windows)} windows of T={cfg.T}"
             f"{f' (×2 → {effective} with augmentation)' if self._double else ''}"
+            f" ({len(self._img_cache)} images cached)"
         )
 
     def __len__(self) -> int:
@@ -167,16 +184,18 @@ class STQDDetDataset(Dataset):
         saved_replay = None
 
         for frame_i, img_path in enumerate(paths):
-            img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-            if img is None:
-                raise FileNotFoundError(f"Cannot read {img_path}")
-            orig_h, orig_w = img.shape[:2]
-
-            if orig_h != self.cfg.img_h or orig_w != self.cfg.img_w:
-                img = cv2.resize(
-                    img, (self.cfg.img_w, self.cfg.img_h),
-                    interpolation=cv2.INTER_LINEAR,
-                )
+            cache_key = str(img_path)
+            if cache_key in self._img_cache:
+                img = self._img_cache[cache_key].copy()
+            else:
+                img = cv2.imread(cache_key, cv2.IMREAD_GRAYSCALE)
+                if img is None:
+                    raise FileNotFoundError(f"Cannot read {img_path}")
+                if img.shape[0] != self.cfg.img_h or img.shape[1] != self.cfg.img_w:
+                    img = cv2.resize(
+                        img, (self.cfg.img_w, self.cfg.img_h),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
 
             lbl_name = img_path.stem + ".txt"
             lbl_path = self.lbl_dir / lbl_name
@@ -225,12 +244,15 @@ def collate_fn(batch):
 
 def get_dataloader(split: str, cfg: Config, shuffle: bool = False) -> DataLoader:
     ds = STQDDetDataset(split, cfg)
+    nw = cfg.num_workers
     return DataLoader(
         ds,
         batch_size=cfg.batch_size,
         shuffle=shuffle,
-        num_workers=cfg.num_workers,
+        num_workers=nw,
         collate_fn=collate_fn,
         pin_memory=True,
         drop_last=(split == "train"),
+        persistent_workers=(nw > 0),
+        prefetch_factor=(4 if nw > 0 else None),
     )

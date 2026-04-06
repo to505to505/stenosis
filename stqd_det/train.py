@@ -70,7 +70,6 @@ def train_one_epoch(
             print(f"WARNING: Non-finite loss at step {global_step}, skipping")
             optimizer.zero_grad()
             global_step += 1
-            scheduler.step()
             continue
 
         scaler.scale(total_loss).backward()
