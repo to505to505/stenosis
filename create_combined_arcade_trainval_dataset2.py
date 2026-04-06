@@ -15,7 +15,7 @@ All are remapped to class 0 (stenosis).
 import shutil
 from pathlib import Path
 
-BASE = Path("/home/dsa/stenosis/data")
+BASE = Path("/workspace/stenosis/data")
 
 ARCADE_SRC = BASE / "stenosis_arcade"
 DATASET2_SRC = BASE / "dataset2_split"
