@@ -1,0 +1,11 @@
+torch>=2.0
+torchvision>=0.15
+numpy
+opencv-python-headless
+albumentations>=1.3
+scikit-image>=0.20
+scikit-learn
+scipy
+tensorboard
+wandb
+mmcv>=2.0.0
