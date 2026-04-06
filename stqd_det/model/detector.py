@@ -16,7 +16,6 @@ Full pipeline:
 
 import torch
 import torch.nn as nn
-from torch.utils.checkpoint import checkpoint
 from torchvision.ops import nms
 
 from ..config import Config
@@ -77,22 +76,12 @@ class STQDDet(nn.Module):
         device = images.device
 
         # ── Step 1: Backbone ──────────────────────────────────────────
-        # Process each frame through backbone separately to save VRAM.
-        # With gradient checkpointing, intermediate ResNet activations are
-        # freed after each frame and recomputed during backward.
+        # Process all B*T frames as a single batch through ResNet50+FPN.
+        # Gradient checkpointing (if enabled) is applied inside ResNet
+        # layers to reduce activation memory while keeping GPU utilization.
         flat_images = images.reshape(B * T, 1, H, W)
-        fpn_list = []
-        for i in range(B * T):
-            frame = flat_images[i : i + 1]  # (1, 1, H, W)
-            if self.training and self.cfg.gradient_checkpointing:
-                fpn_i = checkpoint(self.backbone, frame, use_reentrant=False)
-            else:
-                fpn_i = self.backbone(frame)
-            fpn_list.append(fpn_i)
-        # Merge per-frame FPN outputs: each key → (B*T, 256, H_i, W_i)
-        fpn_features = {}
-        for key in fpn_list[0]:
-            fpn_features[key] = torch.cat([f[key] for f in fpn_list], dim=0)
+        fpn_features = self.backbone(flat_images)
+        # fpn_features: OrderedDict "0".."3", each (B*T, 256, H_i, W_i)
 
         # ── Step 2: GFE on top FPN layer ─────────────────────────────
         fpn_features = self.gfe(fpn_features, num_frames=T)
