@@ -118,6 +118,7 @@ def hungarian_match_across_frames(
     iou_weight: float = 1.0,
     dist_weight: float = 0.5,
     score_thresh: float = 0.3,
+    max_dets_per_frame: int = 30,
 ) -> list[dict]:
     """Match predicted boxes across N frames using Hungarian algorithm.
 
@@ -141,14 +142,23 @@ def hungarian_match_across_frames(
 
     N = len(predictions)
 
-    # Filter by confidence threshold
+    # Filter by confidence threshold and limit to top-K per frame
     filtered = []
     for n, pred in enumerate(predictions):
         mask = pred["scores"] >= score_thresh
+        boxes = pred["boxes"][mask]
+        scores = pred["scores"][mask]
+        labels = pred["labels"][mask]
+        # Keep only top-K by score to bound cost matrix size
+        if len(scores) > max_dets_per_frame:
+            topk = scores.topk(max_dets_per_frame).indices
+            boxes = boxes[topk]
+            scores = scores[topk]
+            labels = labels[topk]
         filtered.append({
-            "boxes": pred["boxes"][mask],
-            "scores": pred["scores"][mask],
-            "labels": pred["labels"][mask],
+            "boxes": boxes,
+            "scores": scores,
+            "labels": labels,
             "frame_idx": n,
         })
 

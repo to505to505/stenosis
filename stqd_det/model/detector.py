@@ -169,10 +169,16 @@ class STQDDet(nn.Module):
             batch_fpn = {k: v[s:e] for k, v in fpn_features.items()}
             batch_image_sizes = image_sizes[s:e]
 
+            # STFS: only need voted_count for training loss.
+            # Skip expensive RoI extraction + aggregation — corrected_rois
+            # are not used during training (no second-stage decode).
             with torch.no_grad():
-                h_tp, h_fn, h_fp, corrected_rois = self.stfs(
-                    batch_fpn, frame_predictions, batch_image_sizes, T
+                groups = hungarian_match_across_frames(
+                    frame_predictions,
+                    iou_weight=self.cfg.stfs_iou_weight,
+                    dist_weight=self.cfg.stfs_dist_weight,
                 )
+                h_tp, h_fn, h_fp = vote_groups(groups, T)
 
             voted_count = len(h_tp) + len(h_fn)
 

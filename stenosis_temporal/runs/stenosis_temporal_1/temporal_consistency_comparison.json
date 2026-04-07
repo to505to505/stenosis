@@ -1,0 +1,29 @@
+{
+  "Stenosis Temporal": {
+    "box_smoothness (mean IoU)": 0.7315306042842302,
+    "score_stability (mean |\u0394conf|)": 0.11692414380388218,
+    "flickering_rate (unmatched/transition)": 1.0556920556920557,
+    "det_count_std (mean \u03c3 per seq)": 0.9075836047072244,
+    "track_fragmentation (breaks/frame)": 0.0,
+    "num_matched_pairs": 1579,
+    "total_transitions": 1221
+  },
+  "RF-DETR (dataset2_augs)": {
+    "box_smoothness (mean IoU)": 0.6369990555801182,
+    "score_stability (mean |\u0394conf|)": 0.08607140380203357,
+    "flickering_rate (unmatched/transition)": 2.2153972153972155,
+    "det_count_std (mean \u03c3 per seq)": 1.0449071772372478,
+    "track_fragmentation (breaks/frame)": 0.0,
+    "num_matched_pairs": 2113,
+    "total_transitions": 1221
+  },
+  "RF-DETR (arcade+ds2 trainval)": {
+    "box_smoothness (mean IoU)": 0.6301799433365436,
+    "score_stability (mean |\u0394conf|)": 0.10248844860188178,
+    "flickering_rate (unmatched/transition)": 1.4422604422604424,
+    "det_count_std (mean \u03c3 per seq)": 0.7998035001543637,
+    "track_fragmentation (breaks/frame)": 0.0,
+    "num_matched_pairs": 1427,
+    "total_transitions": 1221
+  }
+}

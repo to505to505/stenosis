@@ -1,0 +1,128 @@
+{
+  "Stenosis Temporal": {
+    "0.1": {
+      "box_smoothness": 0.7252064467287301,
+      "score_stability": 0.11998279920387418,
+      "flickering_rate": 1.3226863226863226,
+      "det_count_std": 1.0883669015684838,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1909
+    },
+    "0.15": {
+      "box_smoothness": 0.7315306042842302,
+      "score_stability": 0.11692414380388218,
+      "flickering_rate": 1.0556920556920557,
+      "det_count_std": 0.9075836047072244,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1579
+    },
+    "0.2": {
+      "box_smoothness": 0.739415307682539,
+      "score_stability": 0.10642435565469531,
+      "flickering_rate": 0.9066339066339066,
+      "det_count_std": 0.7837951400742689,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1351
+    },
+    "0.3": {
+      "box_smoothness": 0.7501091423076011,
+      "score_stability": 0.08903737251998535,
+      "flickering_rate": 0.6519246519246519,
+      "det_count_std": 0.6608816670348446,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1083
+    },
+    "0.5": {
+      "box_smoothness": 0.7616068734716507,
+      "score_stability": 0.0523154966818179,
+      "flickering_rate": 0.3570843570843571,
+      "det_count_std": 0.43912490150552697,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 732
+    }
+  },
+  "RF-DETR (dataset2_augs)": {
+    "0.1": {
+      "box_smoothness": 0.6403536231107145,
+      "score_stability": 0.08658968271667576,
+      "flickering_rate": 4.298116298116298,
+      "det_count_std": 1.5443823381965478,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 3623
+    },
+    "0.15": {
+      "box_smoothness": 0.6369990555801182,
+      "score_stability": 0.08607140380203357,
+      "flickering_rate": 2.2153972153972155,
+      "det_count_std": 1.0449071772372478,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 2113
+    },
+    "0.2": {
+      "box_smoothness": 0.6374016294068106,
+      "score_stability": 0.07848337696412125,
+      "flickering_rate": 1.5470925470925472,
+      "det_count_std": 0.7778850448426698,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1480
+    },
+    "0.3": {
+      "box_smoothness": 0.6403212468019107,
+      "score_stability": 0.0638411606828796,
+      "flickering_rate": 0.8091728091728092,
+      "det_count_std": 0.5456557147103255,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 843
+    },
+    "0.5": {
+      "box_smoothness": 0.6472012787498496,
+      "score_stability": 0.04225245495637258,
+      "flickering_rate": 0.23177723177723178,
+      "det_count_std": 0.3233545461225711,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 300
+    }
+  },
+  "RF-DETR (arcade+ds2 trainval)": {
+    "0.1": {
+      "box_smoothness": 0.6329627651320731,
+      "score_stability": 0.1045661527315589,
+      "flickering_rate": 2.3226863226863226,
+      "det_count_std": 1.255771450553459,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 2131
+    },
+    "0.15": {
+      "box_smoothness": 0.6301799433365436,
+      "score_stability": 0.10248844860188178,
+      "flickering_rate": 1.4422604422604424,
+      "det_count_std": 0.7998035001543637,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1427
+    },
+    "0.2": {
+      "box_smoothness": 0.6340305610774175,
+      "score_stability": 0.08992516416816203,
+      "flickering_rate": 1.0737100737100738,
+      "det_count_std": 0.5870330065058179,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 1086
+    },
+    "0.3": {
+      "box_smoothness": 0.6320719105716165,
+      "score_stability": 0.0692075613293988,
+      "flickering_rate": 0.7182637182637183,
+      "det_count_std": 0.39964899163192696,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 799
+    },
+    "0.5": {
+      "box_smoothness": 0.6351437652165332,
+      "score_stability": 0.04152551915334619,
+      "flickering_rate": 0.2972972972972973,
+      "det_count_std": 0.31295714339073966,
+      "track_fragmentation": 0.0,
+      "matched_pairs": 460
+    }
+  }
+}

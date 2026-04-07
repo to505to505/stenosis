@@ -219,6 +219,31 @@ def main():
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"  Parameters: {num_params:.1f}M")
 
+    # GPU warmup: run a dummy forward+backward pass to trigger cudnn
+    # benchmark autotuning and CUDA kernel JIT for all conv shapes upfront.
+    # Without this, the first ~150 training iterations are 4-6× slower.
+    if device.type == "cuda":
+        print("  GPU warmup (cuDNN autotuning)...", flush=True)
+        model.train()
+        _warmup_B, _warmup_T = 1, cfg.T
+        _warmup_imgs = torch.randn(
+            _warmup_B, _warmup_T, cfg.in_channels, cfg.img_h, cfg.img_w,
+            device=device,
+        )
+        _warmup_targets = [
+            [{"boxes": torch.zeros(0, 4, device=device),
+              "labels": torch.zeros(0, dtype=torch.long, device=device)}
+             for _ in range(_warmup_T)]
+        ]
+        with autocast("cuda", enabled=cfg.amp):
+            _warmup_losses = model(_warmup_imgs, _warmup_targets)
+        _warmup_losses["total_loss"].backward()
+        model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+        del _warmup_imgs, _warmup_targets, _warmup_losses
+        torch.cuda.empty_cache()
+        print("  GPU warmup done.", flush=True)
+
     # Optimizer: AdamW per paper spec
     optimizer = torch.optim.AdamW(
         model.parameters(),

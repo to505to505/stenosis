@@ -86,8 +86,11 @@ class HungarianMatcher(nn.Module):
             pred_boxes / img_scale, gt_boxes / img_scale, p=1
         )  # (P, M)
 
-        # GIoU cost
-        iou = box_iou(pred_boxes, gt_boxes)  # (P, M)
+        # GIoU cost — sanitize predicted boxes to ensure non-zero area
+        pred_safe = pred_boxes.clone()
+        pred_safe[:, 2] = torch.max(pred_safe[:, 2], pred_safe[:, 0] + 1)
+        pred_safe[:, 3] = torch.max(pred_safe[:, 3], pred_safe[:, 1] + 1)
+        iou = box_iou(pred_safe, gt_boxes)  # (P, M)
         cost_giou = -iou  # (P, M) — negative IoU
 
         # Combined cost
@@ -165,6 +168,13 @@ class STQDDetCriterion(nn.Module):
         total_l1 = torch.tensor(0.0, device=device)
         total_giou = torch.tensor(0.0, device=device)
 
+        # Pre-compute inverse image scale for L1 normalization (once)
+        img_scale_inv = torch.tensor(
+            [1.0 / self.cfg.img_w, 1.0 / self.cfg.img_h,
+             1.0 / self.cfg.img_w, 1.0 / self.cfg.img_h],
+            device=device,
+        )
+
         # Pre-compute Hungarian matching on the LAST decoder layer only,
         # then reuse indices for all layers. This reduces N_layers × N_frames
         # scipy CPU round-trips to just N_frames calls.
@@ -200,15 +210,13 @@ class STQDDetCriterion(nn.Module):
                 pred_idx, gt_idx = cached_matches[n]
 
                 # Classification loss (focal loss for all predictions)
-                # Create target: -1 for unmatched (background), gt_label for matched
-                target_classes = torch.full(
+                target_classes = torch.zeros(
                     (pred_cls.shape[0], self.num_classes),
-                    0.0, device=device,
+                    device=device,
                 )
                 if len(pred_idx) > 0:
-                    # One-hot for matched predictions
-                    for pi, gi in zip(pred_idx, gt_idx):
-                        target_classes[pi, gt_labels[gi]] = 1.0
+                    # Vectorized one-hot assignment
+                    target_classes[pred_idx, gt_labels[gt_idx]] = 1.0
 
                 cls_loss = sigmoid_focal_loss(
                     pred_cls, target_classes,
@@ -223,23 +231,25 @@ class STQDDetCriterion(nn.Module):
                     matched_pred = pred_box[pred_idx]
                     matched_gt = gt_boxes[gt_idx]
 
-                    # L1 loss (normalize to [0,1] to keep loss scale manageable)
-                    img_scale = torch.tensor(
-                        [self.cfg.img_w, self.cfg.img_h,
-                         self.cfg.img_w, self.cfg.img_h],
-                        device=device, dtype=matched_pred.dtype,
-                    )
                     l1 = F.l1_loss(
-                        matched_pred / img_scale,
-                        matched_gt / img_scale,
+                        matched_pred * img_scale_inv,
+                        matched_gt * img_scale_inv,
                         reduction="sum",
                     )
                     layer_l1 = layer_l1 + l1
 
-                    # GIoU loss (ensure fp32 for numerical stability)
+                    # Sanitize predicted boxes: clamp to min 1px width/height
+                    # to prevent NaN from zero-area boxes early in training
+                    mp = matched_pred.float()
+                    mp_w = (mp[:, 2] - mp[:, 0]).clamp(min=1.0)
+                    mp_h = (mp[:, 3] - mp[:, 1]).clamp(min=1.0)
+                    mp_safe = torch.stack([mp[:, 0], mp[:, 1], mp[:, 0] + mp_w, mp[:, 1] + mp_h], dim=-1)
+
                     giou = generalized_box_iou_loss(
-                        matched_pred.float(), matched_gt.float(), reduction="sum"
+                        mp_safe, matched_gt.float(), reduction="sum"
                     )
+                    if not torch.isfinite(giou):
+                        giou = torch.tensor(0.0, device=device)
                     layer_giou = layer_giou + giou
 
                     num_matched += len(pred_idx)
