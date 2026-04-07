@@ -7,6 +7,7 @@ Adapted from stenosis_detnet/dataset.py.
 
 import re
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -150,13 +151,19 @@ class STQDDetDataset(Dataset):
         for w in self.windows:
             for p in w:
                 all_paths.add(str(p))
-        for p in all_paths:
+
+        def _load_one(p: str) -> tuple[str, np.ndarray | None]:
             img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
             if img is not None:
                 if img.shape[0] != cfg.img_h or img.shape[1] != cfg.img_w:
                     img = cv2.resize(img, (cfg.img_w, cfg.img_h),
                                      interpolation=cv2.INTER_LINEAR)
-                self._img_cache[p] = img
+            return p, img
+
+        with ThreadPoolExecutor(max_workers=cfg.num_workers or 4) as pool:
+            for p, img in pool.map(_load_one, all_paths):
+                if img is not None:
+                    self._img_cache[p] = img
 
         print(
             f"[{split}] {len(sequences)} sequences, "
@@ -186,7 +193,9 @@ class STQDDetDataset(Dataset):
         for frame_i, img_path in enumerate(paths):
             cache_key = str(img_path)
             if cache_key in self._img_cache:
-                img = self._img_cache[cache_key].copy()
+                img = self._img_cache[cache_key]
+                if use_aug:
+                    img = img.copy()  # only copy when augmentation may modify
             else:
                 img = cv2.imread(cache_key, cv2.IMREAD_GRAYSCALE)
                 if img is None:

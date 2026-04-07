@@ -2,7 +2,9 @@
 
 import argparse
 import csv
+import json
 import os
+import shutil
 import sys
 import time
 from dataclasses import asdict
@@ -142,6 +144,10 @@ def main():
     parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
     parser.add_argument("--wandb-project", type=str, default=None, help="W&B project name")
     parser.add_argument("--name", type=str, default=None, help="Run name")
+    parser.add_argument("--run-test", action="store_true", default=False,
+                        help="Run evaluation on test set after training")
+    parser.add_argument("--checkpoint-interval", type=int, default=10,
+                        help="Save checkpoint every N epochs (0=disable)")
     args = parser.parse_args()
 
     cfg = Config()
@@ -194,10 +200,22 @@ def main():
     csv_writer = csv.DictWriter(csv_file, fieldnames=csv_fields, extrasaction="ignore")
     csv_writer.writeheader()
 
+    # Print config summary
+    cfg_dict = asdict(cfg)
     print("=" * 60)
     print("Spatio-Temporal Stenosis Detector — Training")
     print(f"Run: {run_name}")
     print("=" * 60)
+    for k, v in sorted(cfg_dict.items()):
+        print(f"  {k:30s}  {v}")
+    print("=" * 60)
+
+    # Save config.json
+    config_json = {k: str(v) if isinstance(v, Path) else v for k, v in cfg_dict.items()}
+    config_json["run_name"] = run_name
+    config_json["device"] = str(device)
+    with open(run_dir / "config.json", "w") as f:
+        json.dump(config_json, f, indent=2, default=str)
 
     # Data
     print("Loading data...")
@@ -210,7 +228,8 @@ def main():
     model.init_weights()
 
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"  Parameters: {num_params:.1f}M")
+    num_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+    print(f"  Parameters: {num_params:.1f}M ({num_trainable:.1f}M trainable)")
 
     # Optimizer
     optimizer = torch.optim.SGD(
@@ -235,6 +254,7 @@ def main():
     start_epoch = 0
     global_step = 0
     best_map = 0.0
+    train_start_time = time.time()
 
     # Resume
     if args.resume:
@@ -320,7 +340,8 @@ def main():
                         {"model": model.state_dict(), "epoch": epoch,
                          "AP@0.5": ap50, "AP@0.75": ap75,
                          "AP@0.5:0.95": ap5095, "mAR": mar,
-                         "F1": f1, "precision": precision, "recall": recall},
+                         "F1": f1, "precision": precision, "recall": recall,
+                         "best_conf_threshold": val_metrics["best_conf_threshold"]},
                         run_dir / "best.pt",
                     )
                     print(f"  ✓ Saved best model (mAP@0.5:0.95={ap5095:.4f})")
@@ -328,7 +349,24 @@ def main():
             csv_writer.writerow(epoch_row)
             csv_file.flush()
 
-            # Periodic checkpoint
+            # Periodic checkpoint (by interval)
+            if args.checkpoint_interval > 0 and (epoch + 1) % args.checkpoint_interval == 0:
+                interval_path = run_dir / f"epoch_{epoch+1:03d}.pt"
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                        "scaler": scaler.state_dict(),
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "best_map": best_map,
+                    },
+                    interval_path,
+                )
+                print(f"  ✓ Saved periodic checkpoint: {interval_path.name}")
+
+            # Always save last.pt
             ckpt_path = run_dir / "last.pt"
             torch.save(
                 {
@@ -346,42 +384,97 @@ def main():
     except KeyboardInterrupt:
         print("\n[INFO] Training interrupted by user")
     finally:
+        total_time = time.time() - train_start_time
         writer.close()
         csv_file.close()
 
+        # Copy metrics.csv → train.csv
+        if csv_path.exists():
+            shutil.copy2(csv_path, run_dir / "train.csv")
+            print(f"[INFO] Training history saved to {run_dir / 'train.csv'}")
+
+        # Run test evaluation if requested
+        test_metrics = None
+        if args.run_test:
+            best_ckpt = run_dir / "best.pt"
+            if best_ckpt.exists():
+                print("\n--- Test Set Evaluation ---")
+                ckpt = torch.load(str(best_ckpt), map_location=device, weights_only=False)
+                model.load_state_dict(ckpt["model"])
+                try:
+                    test_loader = get_dataloader("test", cfg, shuffle=False)
+                    test_metrics = run_evaluation(model, test_loader, device, cfg)
+                    print(f"  AP@0.5:      {test_metrics['AP@0.5']:.4f}")
+                    print(f"  AP@0.75:     {test_metrics['AP@0.75']:.4f}")
+                    print(f"  AP@0.5:0.95: {test_metrics['AP@0.5:0.95']:.4f}")
+                    print(f"  mAR:         {test_metrics['mAR']:.4f}")
+                    print(f"  F1:          {test_metrics['F1']:.4f}  (conf={test_metrics['best_conf_threshold']:.2f})")
+                    print(f"  Precision:   {test_metrics['precision']:.4f}")
+                    print(f"  Recall:      {test_metrics['recall']:.4f}")
+                except Exception as e:
+                    print(f"[WARN] Test evaluation failed: {e}")
+            else:
+                print("[WARN] No best.pt found, skipping test evaluation")
+
         # Write best.txt summary
-        _write_best_txt(run_dir, cfg, best_map, run_name)
+        _write_best_txt(run_dir, cfg, best_map, run_name, num_params,
+                        total_time, str(device), test_metrics)
 
         if wandb_run is not None:
             import wandb
             wandb.finish()
 
-        print(f"\nTraining complete. Best mAP@0.5:0.95: {best_map:.4f}")
-        print(f"Checkpoints saved to: {run_dir}")
+        # List saved checkpoints
+        ckpts = sorted(run_dir.glob("*.pt"))
+        if ckpts:
+            print(f"[INFO] Checkpoints ({len(ckpts)}): {[c.name for c in ckpts]}")
+
+        hours, remainder = divmod(int(total_time), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        print(f"\nTraining complete in {hours}h {minutes}m {seconds}s")
+        print(f"Best mAP@0.5:0.95: {best_map:.4f}")
+        print(f"All results saved to: {run_dir}")
 
 
-def _write_best_txt(run_dir: Path, cfg: Config, best_map: float, run_name: str):
+def _write_best_txt(run_dir: Path, cfg: Config, best_map: float, run_name: str,
+                    num_params: float, total_time: float, device_str: str,
+                    test_metrics: dict | None = None):
     """Write best.txt with best metrics + config (matches RF-DETR format)."""
     best_ckpt = run_dir / "best.pt"
     best_metrics = {}
     if best_ckpt.exists():
         ckpt = torch.load(str(best_ckpt), map_location="cpu", weights_only=False)
-        for k in ["AP@0.5", "AP@0.75", "AP@0.5:0.95", "mAR", "F1", "precision", "recall", "epoch"]:
+        for k in ["AP@0.5", "AP@0.75", "AP@0.5:0.95", "mAR", "F1", "precision",
+                  "recall", "best_conf_threshold", "epoch"]:
             if k in ckpt:
                 best_metrics[k] = ckpt[k]
 
+    hours, remainder = divmod(int(total_time), 3600)
+    minutes, seconds = divmod(remainder, 60)
+
     best_txt = run_dir / "best.txt"
     with open(best_txt, "w") as f:
-        f.write(f"Stenosis Temporal Detector — Best Results\n")
-        f.write("=" * 40 + "\n\n")
-        f.write(f"Run:           {run_name}\n")
-        f.write(f"Best mAP50-95: {best_map:.5f}\n")
-        f.write(f"Best epoch:    {best_metrics.get('epoch', 'N/A')}\n")
+        f.write("Stenosis Temporal Detector — Best Results\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(f"Run:              {run_name}\n")
+        f.write(f"Device:           {device_str}\n")
+        f.write(f"Parameters:       {num_params:.1f}M\n")
+        f.write(f"Training time:    {hours}h {minutes}m {seconds}s\n")
+        f.write(f"Best mAP50-95:    {best_map:.5f}\n")
+        f.write(f"Best epoch:       {best_metrics.get('epoch', 'N/A')}\n")
 
-        f.write("\n--- Metrics ---\n")
+        f.write("\n--- Best Validation Metrics ---\n")
         for k, v in sorted(best_metrics.items()):
             if k != "epoch":
-                f.write(f"  {k:25s}  {v:.5f}\n" if isinstance(v, float) else f"  {k:25s}  {v}\n")
+                f.write(f"  {k:30s}  {v:.5f}\n" if isinstance(v, float) else f"  {k:30s}  {v}\n")
+
+        if test_metrics is not None:
+            f.write("\n--- Test Set Metrics ---\n")
+            for k in ["AP@0.5", "AP@0.75", "AP@0.5:0.95", "mAR",
+                      "F1", "precision", "recall", "best_conf_threshold"]:
+                v = test_metrics.get(k)
+                if v is not None:
+                    f.write(f"  {k:30s}  {v:.5f}\n" if isinstance(v, float) else f"  {k:30s}  {v}\n")
 
         f.write("\n--- Config ---\n")
         cfg_dict = asdict(cfg)

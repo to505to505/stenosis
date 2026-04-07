@@ -70,7 +70,6 @@ def train_one_epoch(
         if not torch.isfinite(total_loss):
             print(f"WARNING: Non-finite loss at step {global_step}, skipping")
             optimizer.zero_grad()
-            scaler.update()  # let scaler reduce scale on failure
             global_step += 1
             continue
 
@@ -162,6 +161,7 @@ def main():
     torch.manual_seed(cfg.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg.seed)
+        torch.backends.cudnn.benchmark = True
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_name = cfg.run_name or f"stqd_det_{timestamp}"
@@ -190,7 +190,7 @@ def main():
     csv_fields = [
         "epoch", "train/total_loss", "train/loss_cls", "train/loss_l1",
         "train/loss_giou", "train/loss_consistency", "train/lr",
-        "val/mAP_50", "val/mAP_75",
+        "val/loss", "val/mAP_50", "val/mAP_75",
     ]
     csv_file = open(csv_path, "w", newline="")
     csv_writer = csv.DictWriter(csv_file, fieldnames=csv_fields, extrasaction="ignore")
@@ -279,6 +279,22 @@ def main():
             print(f"  Val loss: {avg_val_loss:.4f}")
             writer.add_scalar("val/loss", avg_val_loss, global_step)
 
+            # CSV logging
+            lr = optimizer.param_groups[0]["lr"]
+            csv_writer.writerow({
+                "epoch": epoch,
+                "train/total_loss": "",
+                "train/loss_cls": "",
+                "train/loss_l1": "",
+                "train/loss_giou": "",
+                "train/loss_consistency": "",
+                "train/lr": f"{lr:.2e}",
+                "val/mAP_50": "",
+                "val/mAP_75": "",
+                "val/loss": f"{avg_val_loss:.4f}",
+            })
+            csv_file.flush()
+
             # Early stopping
             if avg_val_loss < best_loss:
                 best_loss = avg_val_loss
@@ -292,12 +308,28 @@ def main():
                     "best_loss": best_loss,
                     "config": asdict(cfg),
                 }, run_dir / "best.pt")
+                # Write best.txt
+                with open(run_dir / "best.txt", "w") as f_best:
+                    f_best.write(f"epoch: {epoch}\n")
+                    f_best.write(f"global_step: {global_step}\n")
+                    f_best.write(f"best_val_loss: {best_loss:.6f}\n")
                 print(f"  Saved best model (loss={best_loss:.4f})")
             else:
                 patience_counter += 1
                 if patience_counter >= cfg.early_stopping_patience:
                     print(f"  Early stopping at epoch {epoch}")
                     break
+
+        # Save last.pt every epoch (for easy resume)
+        torch.save({
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_loss": best_loss,
+            "config": asdict(cfg),
+        }, run_dir / "last.pt")
 
         # Periodic checkpoint
         if (epoch + 1) % 10 == 0:

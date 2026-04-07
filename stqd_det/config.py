@@ -22,7 +22,7 @@ class Config:
 
     # ── Backbone / FPN ─────────────────────────────────────────────────
     C: int = 256                  # FPN output channels
-    gradient_checkpointing: bool = True
+    gradient_checkpointing: bool = False
 
     # ── GFE (Global Feature Enhancement) ───────────────────────────────
     gfe_num_heads: int = 8

@@ -194,44 +194,33 @@ class GFEModule(nn.Module):
 
         # Reshape to (B, N, C, H, W)
         feat_5d = feat.reshape(B, N, C, H, W)
+        S = H * W  # spatial token count
 
-        enhanced_frames = []
-        for b in range(B):
-            frame_feats = feat_5d[b]  # (N, C, H, W)
+        # Tokenize all frames at once: (B, N, C, H, W) → (B, N, S, C)
+        tokens = feat_5d.reshape(B, N, C, S).permute(0, 1, 3, 2)  # (B, N, S, C)
 
-            # Step 1: Tokenize — flatten spatial dims to token sequence
-            # Each spatial position is a C-dim token: (N, H*W, C)
-            tokens = frame_feats.reshape(N, C, H * W).permute(0, 2, 1)  # (N, S, C)
+        # Build prev/next with boundary duplication (edge clamping)
+        # prev_tokens[b, n] = tokens[b, max(0, n-1)]
+        # next_tokens[b, n] = tokens[b, min(N-1, n+1)]
+        prev_tokens = torch.cat([tokens[:, :1], tokens[:, :-1]], dim=1)  # (B, N, S, C)
+        next_tokens = torch.cat([tokens[:, 1:], tokens[:, -1:]], dim=1)  # (B, N, S, C)
 
-            # Step 2: Contextual grouping + MHA for each frame
-            enhanced_tokens = []
-            for n in range(N):
-                prev_idx = max(0, n - 1)
-                next_idx = min(N - 1, n + 1)
+        # Reshape for batched MHA: (B*N, S, C)
+        q = tokens.reshape(B * N, S, C)
+        k = prev_tokens.reshape(B * N, S, C)
+        v = next_tokens.reshape(B * N, S, C)
 
-                v_prev = tokens[prev_idx].unsqueeze(0)  # (1, S, C)
-                v_curr = tokens[n].unsqueeze(0)          # (1, S, C)
-                v_next = tokens[next_idx].unsqueeze(0)   # (1, S, C)
+        # Single batched MHA call instead of B*N sequential calls
+        enhanced_tokens = self.attention(k, q, v)  # (B*N, S, C)
 
-                v_enhanced = self.attention(v_prev, v_curr, v_next)  # (1, S, C)
-                enhanced_tokens.append(v_enhanced)
+        # Reshape back to spatial feature maps: (B*N, C, H, W)
+        feat_attn = enhanced_tokens.permute(0, 2, 1).reshape(B * N, C, H, W)
 
-            enhanced_tokens = torch.cat(enhanced_tokens, dim=0)  # (N, S, C)
-
-            # Step 3: Reshape back to spatial feature maps
-            feat_attn = enhanced_tokens.permute(0, 2, 1).reshape(N, C, H, W)
-
-            # Step 4: Dynamic Convolution + residual (Eq. 7)
-            feat_dc = self.dynamic_conv(feat_attn)            # (N, C, H, W)
-            feat_dc = self.dc_norm(self.dc_fc(feat_dc) + feat_attn)
-
-            enhanced_frames.append(feat_dc)
-
-        # Stack back: (B, N, C, H, W) → (B*N, C, H, W)
-        enhanced = torch.stack(enhanced_frames, dim=0)  # (B, N, C, H, W)
-        enhanced = enhanced.reshape(BN, C, H, W)
+        # Dynamic Convolution + residual (Eq. 7)
+        feat_dc = self.dynamic_conv(feat_attn)            # (B*N, C, H, W)
+        feat_dc = self.dc_norm(self.dc_fc(feat_dc) + feat_attn)
 
         # Update FPN dict
         fpn_features = dict(fpn_features)  # make mutable copy
-        fpn_features[top_key] = enhanced
+        fpn_features[top_key] = feat_dc
         return fpn_features

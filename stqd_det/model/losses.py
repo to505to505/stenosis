@@ -165,6 +165,21 @@ class STQDDetCriterion(nn.Module):
         total_l1 = torch.tensor(0.0, device=device)
         total_giou = torch.tensor(0.0, device=device)
 
+        # Pre-compute Hungarian matching on the LAST decoder layer only,
+        # then reuse indices for all layers. This reduces N_layers × N_frames
+        # scipy CPU round-trips to just N_frames calls.
+        last_layer = layer_outputs[-1]
+        cached_matches: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for n in range(N):
+            gt_boxes = gt_boxes_per_frame[n].to(device)
+            gt_labels = gt_labels_per_frame[n].to(device)
+            pred_idx, gt_idx = self.matcher(
+                last_layer["cls_logits"][n],
+                last_layer["box_pred"][n],
+                gt_boxes, gt_labels,
+            )
+            cached_matches.append((pred_idx, gt_idx))
+
         for layer_out in layer_outputs:
             cls_logits = layer_out["cls_logits"]  # (sum_N, P, num_classes)
             box_pred = layer_out["box_pred"]       # (sum_N, P, 4)
@@ -181,10 +196,8 @@ class STQDDetCriterion(nn.Module):
                 pred_cls = cls_logits[n]   # (P, num_classes)
                 pred_box = box_pred[n]     # (P, 4)
 
-                # Hungarian matching
-                pred_idx, gt_idx = self.matcher(
-                    pred_cls, pred_box, gt_boxes, gt_labels
-                )
+                # Reuse cached matching indices
+                pred_idx, gt_idx = cached_matches[n]
 
                 # Classification loss (focal loss for all predictions)
                 # Create target: -1 for unmatched (background), gt_label for matched
