@@ -9,17 +9,11 @@ Architecture
 """
 
 import copy
-import sys
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-# ── make rf-detr importable ──────────────────────────────────────────
-_RFDETR_ROOT = str(Path(__file__).resolve().parent.parent / "rf-detr" / "src")
-if _RFDETR_ROOT not in sys.path:
-    sys.path.insert(0, _RFDETR_ROOT)
 
 from rfdetr.config import RFDETRSmallConfig, TrainConfig
 from rfdetr.models.lwdetr import build_model_from_config, build_criterion_from_config

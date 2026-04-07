@@ -11,9 +11,7 @@ Usage:
 
 import argparse
 import json
-import math
 import random
-import sys
 import time
 from pathlib import Path
 
@@ -21,9 +19,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
-
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "rf-detr" / "src"))
 
 from .config import Config
 from .dataset import get_dataloader
