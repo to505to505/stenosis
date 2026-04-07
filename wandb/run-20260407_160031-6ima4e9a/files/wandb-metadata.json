@@ -1,0 +1,41 @@
+{
+  "os":  "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "python":  "CPython 3.10.19",
+  "startedAt":  "2026-04-07T14:00:31.816580Z",
+  "args":  [
+    "--dataset",
+    "data/dataset2_split"
+  ],
+  "program":  "-m rfdetr_temporal.train",
+  "git":  {
+    "remote":  "https://github.com/to505to505/stenosis.git",
+    "commit":  "9a26aa3f613f691a634810576cc6d87232435504"
+  },
+  "email":  "dmitrii.sakharov04@gmail.com",
+  "root":  "/home/dsa/stenosis",
+  "host":  "PMI-PC-0358-Stage",
+  "executable":  "/home/dsa/miniconda3/envs/stenosis/bin/python",
+  "cpu_count":  16,
+  "cpu_count_logical":  32,
+  "gpu":  "NVIDIA GeForce RTX 3060",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "1081101176832",
+      "used":  "982336868352"
+    }
+  },
+  "memory":  {
+    "total":  "24599699456"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 3060",
+      "memoryTotal":  "12884901888",
+      "architecture":  "Ampere",
+      "uuid":  "GPU-c01c1980-4fa3-f37d-55e6-a12179a292e0"
+    }
+  ],
+  "cudaVersion":  "13.1",
+  "writerId":  "e14vtexxllyuwgr1jcicbob1j12z0ph2"
+}

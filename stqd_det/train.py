@@ -67,18 +67,23 @@ def train_one_epoch(
 
         total_loss = losses["total_loss"]
 
-        if not torch.isfinite(total_loss):
-            print(f"WARNING: Non-finite loss at step {global_step}, skipping")
-            optimizer.zero_grad()
-            global_step += 1
-            continue
-
+        # Always run the full scaler pipeline so GradScaler can detect
+        # inf/nan grads and reduce the AMP scale factor automatically.
+        # Without this, non-finite loss cascades indefinitely.
         scaler.scale(total_loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.max_grad_norm)
-        scaler.step(optimizer)
-        scaler.update()
+        scaler.step(optimizer)   # skips optimizer.step if inf grads detected
+        scaler.update()          # halves scale factor on inf, preventing cascade
         scheduler.step()
+
+        if not torch.isfinite(total_loss):
+            print(
+                f"WARNING: Non-finite loss at step {global_step}, "
+                f"scale→{scaler.get_scale():.0f}"
+            )
+            global_step += 1
+            continue
 
         for k, v in losses.items():
             running_losses[k] = running_losses.get(k, 0.0) + v.item()

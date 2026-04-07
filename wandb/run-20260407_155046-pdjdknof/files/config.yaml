@@ -1,0 +1,139 @@
+_wandb:
+    value:
+        cli_version: 0.25.0
+        e:
+            brg58noz2ib12i8nld6oy0mawhs69pdm:
+                args:
+                    - --dataset
+                    - data/dataset2_split
+                cpu_count: 16
+                cpu_count_logical: 32
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "982351294464"
+                email: dmitrii.sakharov04@gmail.com
+                executable: /home/dsa/miniconda3/envs/stenosis/bin/python
+                git:
+                    commit: 260a68d28f8f410d84581600b1f8b4a01ac05003
+                    remote: https://github.com/to505to505/stenosis.git
+                gpu: NVIDIA GeForce RTX 3060
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      memoryTotal: "12884901888"
+                      name: NVIDIA GeForce RTX 3060
+                      uuid: GPU-c01c1980-4fa3-f37d-55e6-a12179a292e0
+                host: PMI-PC-0358-Stage
+                memory:
+                    total: "24599699456"
+                os: Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39
+                program: -m rfdetr_temporal.train
+                python: CPython 3.10.19
+                root: /home/dsa/stenosis
+                startedAt: "2026-04-07T13:50:46.827494Z"
+                writerId: brg58noz2ib12i8nld6oy0mawhs69pdm
+        m: []
+        python_version: 3.10.19
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+                - 80
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+                - 80
+            "3":
+                - 13
+                - 16
+            "4": 3.10.19
+            "5": 0.25.0
+            "6": 5.5.0
+            "12": 0.25.0
+            "13": linux-x86_64
+T:
+    value: 5
+amp:
+    value: true
+batch_size:
+    value: 2
+data_root:
+    value: data/dataset2_split
+epochs:
+    value: 50
+eval_interval:
+    value: 1
+freeze_backbone:
+    value: true
+freeze_decoder:
+    value: false
+grad_accum_steps:
+    value: 2
+hidden_dim:
+    value: 256
+img_size:
+    value: 512
+log_interval:
+    value: 50
+lr:
+    value: 0.0001
+lr_backbone:
+    value: 1e-05
+lr_gamma:
+    value: 0.1
+lr_step_milestones:
+    value:
+        - 30
+        - 40
+nms_thresh:
+    value: 0.5
+num_classes:
+    value: 1
+num_queries:
+    value: 300
+num_workers:
+    value: 4
+output_dir:
+    value: rfdetr_temporal/runs
+pixel_mean:
+    value:
+        - 0.485
+        - 0.456
+        - 0.406
+pixel_std:
+    value:
+        - 0.229
+        - 0.224
+        - 0.225
+rfdetr_checkpoint:
+    value: rfdetr_runs/dataset2_augs/checkpoint_best_total.pth
+run_name:
+    value: null
+score_thresh:
+    value: 0.05
+seed:
+    value: 42
+temporal_attn_layers:
+    value: 2
+temporal_nhead:
+    value: 8
+wandb_enabled:
+    value: true
+wandb_project:
+    value: rfdetr-temporal
+warmup_iters:
+    value: 500
+weight_decay:
+    value: 0.0001

@@ -1,0 +1,42 @@
+/home/dsa/stenosis/rfdetr_temporal/train.py:132: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with autocast(enabled=cfg.amp):
+`use_return_dict` is deprecated! Use `return_dict` instead!
+  [1/50] step 50/2606  loss=8.7463
+  [1/50] step 100/2606  loss=9.1976
+  [1/50] step 150/2606  loss=8.5348
+  [1/50] step 200/2606  loss=7.4793
+  [1/50] step 250/2606  loss=7.7091
+  [1/50] step 300/2606  loss=7.1744
+  [1/50] step 350/2606  loss=8.3064
+Traceback (most recent call last):
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/dsa/stenosis/rfdetr_temporal/train.py", line 261, in <module>
+    train(cfg)
+  File "/home/dsa/stenosis/rfdetr_temporal/train.py", line 147, in train
+    scaler.step(optimizer)
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/site-packages/torch/amp/grad_scaler.py", line 463, in step
+    retval = self._maybe_opt_step(optimizer, optimizer_state, *args, **kwargs)
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/site-packages/torch/amp/grad_scaler.py", line 356, in _maybe_opt_step
+    if not sum(v.item() for v in optimizer_state["found_inf_per_device"].values()):
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/site-packages/torch/amp/grad_scaler.py", line 356, in <genexpr>
+    if not sum(v.item() for v in optimizer_state["found_inf_per_device"].values()):
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/dsa/stenosis/rfdetr_temporal/train.py", line 261, in <module>
+    train(cfg)
+  File "/home/dsa/stenosis/rfdetr_temporal/train.py", line 147, in train
+    scaler.step(optimizer)
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/site-packages/torch/amp/grad_scaler.py", line 463, in step
+    retval = self._maybe_opt_step(optimizer, optimizer_state, *args, **kwargs)
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/site-packages/torch/amp/grad_scaler.py", line 356, in _maybe_opt_step
+    if not sum(v.item() for v in optimizer_state["found_inf_per_device"].values()):
+  File "/home/dsa/miniconda3/envs/stenosis/lib/python3.10/site-packages/torch/amp/grad_scaler.py", line 356, in <genexpr>
+    if not sum(v.item() for v in optimizer_state["found_inf_per_device"].values()):
+KeyboardInterrupt
