@@ -158,9 +158,15 @@ class STQDDetCriterion(nn.Module):
         N = len(gt_boxes_per_frame)
         num_layers = len(layer_outputs)
 
-        # Force fp32 for all loss math to prevent AMP fp16 overflow
+        # Force fp32 for all loss math to prevent AMP fp16 overflow.
+        # Also sanitize: fp16 forward pass can produce inf/NaN which we must
+        # clamp to finite values so backward doesn't corrupt model weights.
+        img_bound = float(max(self.cfg.img_w, self.cfg.img_h))
         layer_outputs = [
-            {k: v.float() for k, v in lo.items()}
+            {
+                "cls_logits": lo["cls_logits"].float().clamp(-50, 50),
+                "box_pred": lo["box_pred"].float().clamp(0, img_bound),
+            }
             for lo in layer_outputs
         ]
 
