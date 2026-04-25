@@ -1,0 +1,22 @@
+cd /home/dsa/stenosis && python -c "
+import _eval_temporal_three_runs_two_datasets as E
+from pathlib import Path
+
+RUN = 'temporal_my_new_run'  # <-- имя папки в rfdetr_temporal/runs/
+
+run_dir = E.ROOT / 'rfdetr_temporal' / 'runs' / RUN
+cfg = E._load_cfg(run_dir)
+model = E._load_model(run_dir, cfg)
+_, postprocess = E._build_criterion(cfg)
+
+import json, torch
+reports = []
+for ds_name, img_dir, lbl_dir in E.DATASETS:
+    rep = E.eval_run_on_dataset(model, cfg, postprocess, ds_name, img_dir, lbl_dir)
+    reports.append(rep)
+
+text = E.format_report(RUN, run_dir, cfg, reports)
+(run_dir / 'results.txt').write_text(text)
+(run_dir / 'results.json').write_text(json.dumps({'run': RUN, 'cfg': {'T': cfg.T, 'img_size': cfg.img_size}, 'datasets': reports}, indent=2))
+print(text)
+"
