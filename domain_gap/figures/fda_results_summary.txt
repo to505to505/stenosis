@@ -1,0 +1,66 @@
+FDA Re-evaluation Summary
+=========================
+
+Datasets
+--------
+A   = Original 2D (stenosis_arcade)
+A*  = FDA-Adapted 2D (Dataset A -> Dataset B)
+B   = Internal Video (cadica_50plus_new)
+C   = External Video (dataset2_split)
+
+Feature-space alignment (ResNet-50 penultimate embeddings)
+-----------------------------------------------------------
+Centroid cosine distance (lower = closer):
+
+              A       A*        B        C
+     A   0.0000   0.0089   0.2295   0.0770
+    A*   0.0089   0.0000   0.2105   0.0796
+     B   0.2295   0.2105   0.0000   0.1424
+     C   0.0770   0.0796   0.1424   0.0000
+
+Headline metrics:
+- d(A,  B)  = 0.2295
+- d(A*, B)  = 0.2105
+- delta     = -0.0190
+
+Interpretation:
+- FDA slightly pulls Dataset A toward the internal target domain B in the task-relevant feature space.
+- For the external domain C, the distance is nearly unchanged:
+  d(A, C) = 0.0770, d(A*, C) = 0.0796, delta = +0.0025.
+
+Domain separability:
+- 5-fold kNN(k=5, cosine) domain-ID accuracy = 0.8990
+- Chance level = 0.25
+
+Image-level similarity (FID, Inception-V3 pool3)
+------------------------------------------------
+Lower is better.
+
+- FID(A,  B)  = 47.095
+- FID(A*, B)  = 52.154
+- FID(A,  C)  = 40.542
+- FID(A*, C)  = 44.567
+- FID(B,  C)  = 37.794
+- FID(A,  A*) = 17.296
+
+FID deltas after FDA:
+- delta FID(., B) = +5.059
+- delta FID(., C) = +4.026
+
+Interpretation:
+- Although FDA improves alignment in the model feature space for B, raw-image FID increases for both B and C.
+- This suggests the low-frequency swap changes the image statistics in a way that Inception treats as a style shift,
+  even though the downstream ResNet representation moves slightly closer to B.
+
+Overall conclusion
+------------------
+- FDA gives a modest improvement toward the internal target domain B in embedding space.
+- FDA does not improve zero-shot alignment to the external dataset C on these metrics.
+- The effect is visible but limited: A and A* remain very close to each other, while B and C still form distinct domains.
+
+Related files
+-------------
+- cluster_distances_fda.txt
+- fid_fda.txt
+- tsne_fda.png
+- tsne_umap_fda.png

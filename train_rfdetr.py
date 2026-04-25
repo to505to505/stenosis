@@ -40,6 +40,14 @@ MODEL_VARIANTS = {
     "large": "RFDETRLarge",
 }
 
+# Native resolution for each model variant (used by LSJ to know crop size)
+MODEL_RESOLUTIONS = {
+    "nano": 384,
+    "small": 512,
+    "medium": 576,
+    "large": 704,
+}
+
 # Default dataset path
 DEFAULT_DATASET = str(ROOT / "data" / "stenosis_arcade")
 DEFAULT_OUTPUT = str(ROOT / "rfdetr_runs")
@@ -293,8 +301,27 @@ def main():
     # Early stopping
     parser.add_argument("--early-stopping", action="store_true", default=True)
     parser.add_argument("--no-early-stopping", dest="early_stopping", action="store_false")
-    parser.add_argument("--patience", type=int, default=20,
+    parser.add_argument("--patience", type=int, default=15,
                         help="Early stopping patience (epochs)")
+    parser.add_argument("--early-stopping-min-delta", type=float, default=0.002,
+                        help="Minimum mAP30 improvement to reset patience counter (default 0.002)")
+    parser.add_argument("--early-stopping-use-ema", action="store_true", default=False,
+                        help="Track early stopping with EMA model metrics instead of raw model")
+
+    # Regularization (Large ViT overfit protection)
+    parser.add_argument("--drop-path", type=float, default=0.0,
+                        help="Stochastic depth drop-path rate for the backbone (e.g. 0.1)")
+    parser.add_argument("--lr-min-factor", type=float, default=0.0,
+                        help="Cosine scheduler LR floor as fraction of initial LR (e.g. 0.01)")
+
+    # Large Scale Jittering (LSJ)
+    parser.add_argument("--lsj", action="store_true", default=False,
+                        help="Enable Large Scale Jittering: randomly scale image 0.1x-2.0x and "
+                             "crop to model resolution. Standard aug for DETR-family models.")
+    parser.add_argument("--lsj-min-scale", type=float, default=0.1,
+                        help="LSJ minimum linear scale factor (default: 0.1)")
+    parser.add_argument("--lsj-max-scale", type=float, default=2.0,
+                        help="LSJ maximum linear scale factor (default: 2.0)")
 
     # Evaluation
     parser.add_argument("--run-test", action="store_true", default=True,
@@ -351,6 +378,57 @@ def main():
         "Sharpen": {"alpha": (0.2, 0.5), "lightness": (0.5, 1.0), "p": 0.2},
     }
 
+    # ── Large Scale Jittering (LSJ) ──
+    # Prepended so it runs first, before other augmentations.
+    #
+    # RandomResizedCrop clamps scale to [0,1] in albumentations, so LSJ is
+    # implemented as a 3-step Sequential:
+    #   1. RandomScale(scale_limit=(min-1, max-1))  → linear scale 0.1x–2.0x
+    #      (scale_limit is a *delta* from 1: 1 + limit_range)
+    #   2. PadIfNeeded                              → pad small outputs to res×res
+    #   3. RandomCrop                               → deterministic crop to res×res
+    #
+    # Uses INTER_LANCZOS4 for upscaling and INTER_AREA for downscaling.
+    if args.lsj:
+        res = MODEL_RESOLUTIONS[args.model_size]
+        # scale_limit is a delta from 1.0: effective scale = 1 + Uniform(lo, hi)
+        scale_lo = args.lsj_min_scale - 1.0   # e.g. 0.1 - 1 = -0.9
+        scale_hi = args.lsj_max_scale - 1.0   # e.g. 2.0 - 1 = +1.0
+        aug_config = {
+            "Sequential": {
+                "transforms": [
+                    {
+                        "RandomScale": {
+                            "scale_limit": (scale_lo, scale_hi),
+                            "interpolation": 4,            # cv2.INTER_LANCZOS4 (upscale)
+                            "area_for_downscale": "image", # cv2.INTER_AREA (downscale)
+                            "p": 1.0,
+                        }
+                    },
+                    {
+                        "PadIfNeeded": {
+                            "min_height": res,
+                            "min_width": res,
+                            "border_mode": 0,   # cv2.BORDER_CONSTANT
+                            "fill": 0,          # black padding
+                            "p": 1.0,
+                        }
+                    },
+                    {
+                        "RandomCrop": {
+                            "height": res,
+                            "width": res,
+                            "p": 1.0,
+                        }
+                    },
+                ],
+                "p": 1.0,
+            },
+            **aug_config,
+        }
+        print(f"[INFO] LSJ enabled: scale {args.lsj_min_scale}x–{args.lsj_max_scale}x, "
+              f"pad+crop to {res}×{res}")
+
     # ── Assemble training config ──
     train_config = {
         "dataset_dir": args.dataset_dir,
@@ -366,6 +444,10 @@ def main():
         "use_ema": True,
         "early_stopping": args.early_stopping,
         "early_stopping_patience": args.patience,
+        "early_stopping_min_delta": args.early_stopping_min_delta,
+        "early_stopping_use_ema": args.early_stopping_use_ema,
+        "drop_path": args.drop_path,
+        "lr_min_factor": args.lr_min_factor,
         "run_test": args.run_test,
         "checkpoint_interval": args.checkpoint_interval,
         "log_per_class_metrics": True,

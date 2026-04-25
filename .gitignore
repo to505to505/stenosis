@@ -2,9 +2,12 @@
 *.pth
 /data/
 logs/
+*.log
 .pytest_cache/
 .vscode/
 __pycache__/
+.venv/
+wandb/
 vasomim/runs/
 vasomim/weights/*.pt
 vit_yolo11/arcade/
@@ -14,3 +17,9 @@ yolo/yolov9/runs/
 yolo/yolov9/wandb/
 yolo/yolov9/weights/
 rfdetr_runs/
+rfdetr_temporal/runs/
+stqd_det/runs/
+stenosis_temporal/runs/
+stenosis_student/runs/
+domain_gap/checkpoints/
+domain_gap/features/

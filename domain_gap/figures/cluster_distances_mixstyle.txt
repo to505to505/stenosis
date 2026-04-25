@@ -1,0 +1,20 @@
+== MixStyle: centroid cosine distance (lower = closer) ==
+
+              A        B        C
+     A   0.0000   0.2345   0.1125
+     B   0.2345   0.0000   0.1795
+     C   0.1125   0.1795   0.0000
+
+== Headline (MixStyle, source-only training) ==
+  d(A, B) = 0.2345
+  d(A, C) = 0.1125
+  d(B, C) = 0.1795
+
+== Comparison vs. baseline (no MixStyle) ==
+  d(A, B):  baseline=0.1850  mixstyle=0.2345   delta=+0.0496
+  d(A, C):  baseline=0.0798  mixstyle=0.1125   delta=+0.0327
+  d(B, C):  baseline=0.1692  mixstyle=0.1795   delta=+0.0104
+
+5-fold kNN(k=5,cosine) domain-id acc (MixStyle): 0.9907 (chance=0.333)
+5-fold kNN(k=5,cosine) domain-id acc (baseline): 0.9900
+  delta = +0.0007 (lower = better domain mixing)

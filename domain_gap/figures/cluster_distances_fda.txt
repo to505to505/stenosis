@@ -1,0 +1,17 @@
+== Centroid cosine distance (lower = closer) ==
+
+              A       A*        B        C
+     A   0.0000   0.0089   0.2295   0.0770
+    A*   0.0089   0.0000   0.2105   0.0796
+     B   0.2295   0.2105   0.0000   0.1424
+     C   0.0770   0.0796   0.1424   0.0000
+
+== Headline: did FDA pull A toward B? ==
+  d(A,  B) = 0.2295
+  d(A*, B) = 0.2105   (delta = -0.0190)
+
+== Zero-shot to external video (C) ==
+  d(A,  C) = 0.0770
+  d(A*, C) = 0.0796   (delta = +0.0025)
+
+5-fold kNN(k=5,cosine) domain-id acc: 0.8990 (chance=0.25)

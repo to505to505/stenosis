@@ -16,6 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from rfdetr.config import RFDETRSmallConfig, TrainConfig
+from rfdetr.models.weights import load_pretrain_weights
 from rfdetr.models.lwdetr import build_model_from_config, build_criterion_from_config
 from rfdetr.utilities.tensors import NestedTensor, nested_tensor_from_tensor_list
 
@@ -23,22 +24,44 @@ from .config import Config
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  Temporal fusion module
+#  Temporal fusion module (Neighbourhood Temporal Attention)
 # ─────────────────────────────────────────────────────────────────────
 class TemporalFusion(nn.Module):
-    """Per-spatial-position temporal self-attention across T frames.
+    """Neighbourhood temporal cross-attention.
 
-    For each feature level the module:
-      1. adds learnable temporal position embeddings
-      2. runs a small TransformerEncoder across the T dimension
-      3. selects the centre-frame output
+    For every centre-frame position (h, w) the module attends to a small
+    spatial window (h ± k, w ± k) in *all* T frames. This compensates for
+    object motion between frames (e.g. cardiac displacement in angiography),
+    so the centre token is enriched even when the object is not in the
+    exact same pixel location across frames.
+
+      • Query : centre frame, single token at (h, w)         shape (1,   C)
+      • Key/V : T · (2k+1)² tokens from local windows of all shape (T·K², C)
+                T frames
+
+    Implementation uses a TransformerDecoder (cross-attention from Q to KV)
+    applied independently for each spatial position.
     """
 
-    def __init__(self, hidden_dim: int, T: int, num_layers: int = 2, nhead: int = 8):
+    def __init__(
+        self,
+        hidden_dim: int,
+        T: int,
+        k: int = 1,
+        num_layers: int = 2,
+        nhead: int = 8,
+    ):
         super().__init__()
         self.T = T
+        self.k = k
+        self.K = 2 * k + 1                      # window side length
+        self.centre = T // 2
+
+        # Positional embeddings for KV tokens: temporal index + spatial offset
         self.temporal_pos = nn.Embedding(T, hidden_dim)
-        encoder_layer = nn.TransformerEncoderLayer(
+        self.spatial_pos = nn.Embedding(self.K * self.K, hidden_dim)
+
+        decoder_layer = nn.TransformerDecoderLayer(
             d_model=hidden_dim,
             nhead=nhead,
             dim_feedforward=hidden_dim * 4,
@@ -46,7 +69,7 @@ class TemporalFusion(nn.Module):
             activation="gelu",
             batch_first=True,
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
     def forward(self, feats: torch.Tensor) -> torch.Tensor:
         """
@@ -56,40 +79,78 @@ class TemporalFusion(nn.Module):
             fused: (B, C, H, W) – temporally-enriched centre-frame features
         """
         B, T, C, H, W = feats.shape
-        assert T == self.T
+        assert T == self.T, f"Expected T={self.T}, got {T}"
+        K = self.K
+        K2 = K * K
+        HW = H * W
 
-        # add temporal positional embeddings  (broadcast over B, H, W)
-        tp = self.temporal_pos.weight  # (T, C)
-        feats = feats + tp[None, :, :, None, None]
+        # ── Build KV: local (K×K) neighbourhood for every (h, w) of every frame
+        x = feats.reshape(B * T, C, H, W)
+        # F.unfold → (B*T, C*K*K, H*W)
+        unfolded = F.unfold(x, kernel_size=K, padding=self.k)
+        # → (B, T, C, K*K, H*W) → (B, H*W, T, K*K, C)
+        unfolded = unfolded.view(B, T, C, K2, HW).permute(0, 4, 1, 3, 2)
+        kv = unfolded.reshape(B * HW, T * K2, C)
 
-        # reshape to (B*H*W, T, C) for temporal self-attention
-        feats = feats.permute(0, 3, 4, 1, 2).reshape(B * H * W, T, C)
-        feats = self.encoder(feats)  # (B*H*W, T, C)
+        # Add temporal + spatial positional embeddings to KV tokens
+        tp = self.temporal_pos.weight                 # (T, C)
+        sp = self.spatial_pos.weight                  # (K*K, C)
+        pos_kv = (tp[:, None, :] + sp[None, :, :]).reshape(T * K2, C)
+        kv = kv + pos_kv[None]                        # broadcast over (B*HW)
 
-        # select centre frame
-        centre = T // 2
-        out = feats[:, centre]  # (B*H*W, C)
-        return out.reshape(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+        # ── Build Q: centre frame's centre-position feature (single token)
+        centre_feat = feats[:, self.centre]           # (B, C, H, W)
+        q = centre_feat.permute(0, 2, 3, 1).reshape(B * HW, 1, C)
+
+        # ── Cross-attention: Q (len 1) attends to KV (len T*K²)
+        out = self.decoder(q, kv)                     # (B*HW, 1, C)
+
+        return out.reshape(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 
 
 # ─────────────────────────────────────────────────────────────────────
 #  Build helpers
 # ─────────────────────────────────────────────────────────────────────
 def _build_rfdetr_from_checkpoint(cfg: Config) -> nn.Module:
-    """Instantiate an RFDETRSmall and load fine-tuned checkpoint weights."""
+    """Instantiate an RFDETRNano and load weights.
+
+    Loading strategy (in order):
+    1. If cfg.rfdetr_checkpoint points to an existing file → treat it as a
+       fine-tuned stenosis checkpoint and load it (shape-filtered, to handle
+       any class/resolution mismatch).
+    2. Otherwise → use rfdetr's built-in load_pretrain_weights(), which
+       auto-downloads 'rf-detr-nano.pth' from the official source exactly
+       the same way the standard rf-detr training script does.
+    """
     model_cfg = RFDETRSmallConfig(num_classes=cfg.num_classes)
     lwdetr = build_model_from_config(model_cfg)
 
     ckpt_path = Path(cfg.rfdetr_checkpoint)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"RF-DETR checkpoint not found: {ckpt_path}")
-    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    if ckpt_path.exists():
+        # ── Fine-tuned stenosis checkpoint ──────────────────────────
+        ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("model", ckpt)
 
-    # The .pth from PTL training stores raw LWDETR weights under 'model'
-    state_dict = ckpt.get("model", ckpt)
-    msg = lwdetr.load_state_dict(state_dict, strict=False)
-    print(f"[RF-DETR] Loaded checkpoint  missing={len(msg.missing_keys)}  "
-          f"unexpected={len(msg.unexpected_keys)}")
+        # Skip keys whose shapes don't match (class head, pos embeddings …)
+        model_sd = lwdetr.state_dict()
+        filtered, skipped = {}, []
+        for k, v in state_dict.items():
+            if k in model_sd and model_sd[k].shape == v.shape:
+                filtered[k] = v
+            else:
+                skipped.append(k)
+
+        msg = lwdetr.load_state_dict(filtered, strict=False)
+        print(f"[RF-DETR] Loaded fine-tuned checkpoint '{ckpt_path.name}'  "
+              f"loaded={len(filtered)}  missing={len(msg.missing_keys)}  "
+              f"skipped(shape)={len(skipped)}")
+    else:
+        # Auto-download official Small pretrained weights
+        print(f"[RF-DETR] Checkpoint '{cfg.rfdetr_checkpoint}' not found – "
+              f"downloading Small pretrained weights (rf-detr-small.pth) …")
+        load_pretrain_weights(lwdetr, model_cfg)
+        print("[RF-DETR] Small pretrained weights loaded.")
+
     return lwdetr
 
 
@@ -158,25 +219,138 @@ class TemporalRFDETR(nn.Module):
             TemporalFusion(
                 hidden_dim=cfg.hidden_dim,
                 T=cfg.T,
+                k=cfg.neighborhood_k,
                 num_layers=cfg.temporal_attn_layers,
                 nhead=cfg.temporal_nhead,
             )
             for _ in range(n_levels)
         ])
+        # ── KD-DETR specific-sampling state ─────────────────────────
+        # Filled in by ``register_teacher_queries`` once a teacher is built.
+        self._has_teacher_queries: bool = False
+        self.register_buffer(
+            "teacher_refpoint",
+            torch.zeros(1, 4),
+            persistent=False,
+        )
+        self.register_buffer(
+            "teacher_query_feat",
+            torch.zeros(1, cfg.hidden_dim),
+            persistent=False,
+        )
 
+        # ── Decoder-input injection hook (KD-DETR slot alignment) ───
+        # When ``self._inject_decoder_inputs`` is set to a dict with keys
+        # ``tgt`` (B, Q, D) and ``refpoints`` (B, Q, 4), the next forward
+        # through ``self.transformer.decoder`` will use *those* tensors as
+        # the per-slot decoder inputs instead of whatever the student's own
+        # encoder + two-stage block computed.  This is the mechanism that
+        # makes the student's deformable attention sample the same spatial
+        # locations the teacher does, which is the core requirement for
+        # KD-DETR slot-aligned distillation on a two-stage detector.
+        self._inject_decoder_inputs: dict | None = None
+
+        def _decoder_inject_pre_hook(_module, args, kwargs):
+            inj = self._inject_decoder_inputs
+            if inj is None:
+                return None
+            new_args = (inj["tgt"], *args[1:])
+            new_kwargs = dict(kwargs)
+            new_kwargs["refpoints_unsigmoid"] = inj["refpoints"]
+            return new_args, new_kwargs
+
+        self.transformer.decoder.register_forward_pre_hook(
+            _decoder_inject_pre_hook, with_kwargs=True,
+        )
+
+    # ─────────────────────────────────────────────────────────────────
+    #  KD-DETR helpers
+    # ─────────────────────────────────────────────────────────────────
+    def register_teacher_queries(
+        self, refpoint_w: torch.Tensor, query_feat_w: torch.Tensor,
+    ) -> None:
+        """Cache the frozen teacher's object queries on the student.
+
+        The student keeps its own learnable ``refpoint_embed`` / ``query_feat``
+        for the detection forward pass.  The teacher queries are stored as
+        non-persistent buffers and used only by ``forward(query_mode='teacher')``
+        for the KD-DETR specific-sampling distillation branch (no Hungarian
+        matching required — predictions are slot-aligned).
+        """
+        device = self.refpoint_embed.weight.device
+        self.teacher_refpoint = refpoint_w.detach().to(device).clone()
+        self.teacher_query_feat = query_feat_w.detach().to(device).clone()
+        self._has_teacher_queries = True
+
+    def _swap_group_detr(self, new_group: int, new_num_queries: int):
+        """Temporarily set ``group_detr`` and ``num_queries`` on the
+        transformer + every decoder submodule that carries those fields.
+
+        Returns a no-arg ``restore`` closure to be called in a ``finally``
+        block.  The student's own ``self.group_detr`` / ``self.num_queries``
+        are left untouched.
+        """
+        tr = self.transformer
+        orig_g_tr = getattr(tr, "group_detr", None)
+        orig_nq_tr = getattr(tr, "num_queries", None)
+        # Walk every transformer module — decoder layers carry their own
+        # ``group_detr`` (used by SA-Q grouping at line 568 in transformer.py).
+        patched: list[tuple[nn.Module, int]] = []
+        for m in tr.modules():
+            if hasattr(m, "group_detr"):
+                patched.append((m, int(m.group_detr)))
+                m.group_detr = int(new_group)
+        if orig_nq_tr is not None:
+            tr.num_queries = int(new_num_queries)
+
+        def restore() -> None:
+            for m, g in patched:
+                m.group_detr = g
+            if orig_nq_tr is not None:
+                tr.num_queries = orig_nq_tr
+
+        return restore
     # ─────────────────────────────────────────────────────────────────
     #  Forward
     # ─────────────────────────────────────────────────────────────────
-    def forward(self, frames: torch.Tensor, targets=None):
+    def forward(
+        self,
+        frames: torch.Tensor,
+        targets=None,
+        query_mode: str = "student",
+        general_queries: dict | None = None,
+        decoder_inputs: dict | None = None,
+    ):
         """
         Args:
             frames: (B, T, 3, H, W) – temporally ordered RGB frames
             targets: list[list[dict]] – per-batch, per-frame targets
                      (only centre-frame targets used for loss)
+            query_mode:
+                * ``"student"``  – the default detection forward.  Uses the
+                  student's own learnable ``refpoint_embed`` / ``query_feat``
+                  with the configured ``group_detr``.
+                * ``"teacher"``  – KD-DETR *specific sampling* branch.  Uses
+                  the teacher queries stored by :meth:`register_teacher_queries`,
+                  with ``group_detr=1`` and the matching slot count.  The
+                  backbone + temporal fusion + decoder weights are shared
+                  with the student forward, only the queries differ.
+                * ``"general"``  – KD-DETR *general sampling* branch.  Uses
+                  the random queries supplied in ``general_queries``
+                  (a dict with ``refpoint`` (Q,4) and ``query_feat`` (Q,D)),
+                  again with ``group_detr=1``.
+            decoder_inputs: optional dict with ``tgt`` (B, Q, D) and
+                ``refpoints`` (B, Q, 4) — the *final* per-slot decoder
+                inputs captured from the teacher's decoder.  When supplied,
+                these tensors override whatever the student's own encoder
+                + two-stage block produced, so the student's deformable
+                attention samples at the teacher's spatial locations.
+                Only meaningful in ``"teacher"`` / ``"general"`` modes.
 
         Returns:
             dict with "pred_logits", "pred_boxes", optionally "aux_outputs"
         """
+        assert query_mode in ("student", "teacher", "general"), query_mode
         B, T, C, H, W = frames.shape
 
         # ── 1. Run backbone on all frames simultaneously ────────────
@@ -210,20 +384,57 @@ class TemporalRFDETR(nn.Module):
             pos_bt = pos.reshape(B, T, Cl, h, w)
             fused_poss.append(pos_bt[:, self.centre])
 
-        # ── 3. Run RF-DETR decoder ──────────────────────────────────
-        if self.training:
-            refpoint_embed_weight = self.refpoint_embed.weight
-            query_feat_weight = self.query_feat.weight
-        else:
-            refpoint_embed_weight = self.refpoint_embed.weight[:self.num_queries]
-            query_feat_weight = self.query_feat.weight[:self.num_queries]
+        # ── 3. Resolve queries + run decoder ────────────────────────
+        restore_fn = None
+        if query_mode == "student":
+            if self.training:
+                refpoint_embed_weight = self.refpoint_embed.weight
+                query_feat_weight = self.query_feat.weight
+            else:
+                refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
+                query_feat_weight = self.query_feat.weight[: self.num_queries]
+        elif query_mode == "teacher":
+            assert self._has_teacher_queries, (
+                "query_mode='teacher' requires register_teacher_queries() first"
+            )
+            refpoint_embed_weight = self.teacher_refpoint
+            query_feat_weight = self.teacher_query_feat
+            restore_fn = self._swap_group_detr(1, refpoint_embed_weight.shape[0])
+        else:  # "general"
+            assert (
+                general_queries is not None
+                and "refpoint" in general_queries
+                and "query_feat" in general_queries
+            ), "query_mode='general' requires general_queries={'refpoint','query_feat'}"
+            refpoint_embed_weight = general_queries["refpoint"]
+            query_feat_weight = general_queries["query_feat"]
+            restore_fn = self._swap_group_detr(1, refpoint_embed_weight.shape[0])
 
-        hs, ref_unsigmoid, hs_enc, ref_enc = self.transformer(
-            fused_srcs, fused_masks, fused_poss,
-            refpoint_embed_weight, query_feat_weight,
-        )
+        # KD-DETR slot-alignment injection: when decoder_inputs is supplied,
+        # the pre-hook on ``self.transformer.decoder`` will swap in the
+        # teacher-derived (tgt, refpoints) right before the decoder runs.
+        if decoder_inputs is not None:
+            assert query_mode in ("teacher", "general"), (
+                "decoder_inputs only valid in teacher/general modes"
+            )
+            assert "tgt" in decoder_inputs and "refpoints" in decoder_inputs
+            self._inject_decoder_inputs = {
+                "tgt": decoder_inputs["tgt"].detach(),
+                "refpoints": decoder_inputs["refpoints"].detach(),
+            }
+
+        try:
+            hs, ref_unsigmoid, hs_enc, ref_enc = self.transformer(
+                fused_srcs, fused_masks, fused_poss,
+                refpoint_embed_weight, query_feat_weight,
+            )
+        finally:
+            self._inject_decoder_inputs = None
+            if restore_fn is not None:
+                restore_fn()
 
         # ── 4. Detection heads ──────────────────────────────────────
+        out: dict | None = None
         if hs is not None:
             if self.bbox_reparam:
                 delta = self.bbox_embed(hs)
@@ -243,7 +454,12 @@ class TemporalRFDETR(nn.Module):
                 out["aux_outputs"] = self._set_aux_loss(outputs_class, outputs_coord)
 
         if self.two_stage:
-            group_detr = self.group_detr if self.training else 1
+            # Teacher / general branches always run single-group; student
+            # follows the train/eval convention.
+            if query_mode == "student":
+                group_detr = self.group_detr if self.training else 1
+            else:
+                group_detr = 1
             hs_enc_list = hs_enc.chunk(group_detr, dim=1)
             cls_enc = []
             for g_idx in range(group_detr):
@@ -251,12 +467,30 @@ class TemporalRFDETR(nn.Module):
                     self.transformer.enc_out_class_embed[g_idx](hs_enc_list[g_idx])
                 )
             cls_enc = torch.cat(cls_enc, dim=1)
-            if hs is not None:
+            if out is not None:
                 out["enc_outputs"] = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
             else:
                 out = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
 
         return out
+
+    # ─────────────────────────────────────────────────────────────────
+    #  Random general-sampling queries (re-drawn per training step)
+    # ─────────────────────────────────────────────────────────────────
+    def sample_general_queries(self, num_queries: int, device, dtype=torch.float32):
+        """Draw a fresh set of random queries for KD-DETR general sampling.
+
+        ``refpoint`` is initialised at zero (matching LWDETR's
+        ``refpoint_embed`` init) so two-stage encoder proposals govern the
+        spatial coverage; ``query_feat`` is N(0, std) noise that probes the
+        decoder with content embeddings unrelated to any trained slot.
+        """
+        std = float(self.cfg.distill_general_query_std)
+        refpoint = torch.zeros(num_queries, 4, device=device, dtype=dtype)
+        query_feat = torch.randn(
+            num_queries, int(self.cfg.hidden_dim), device=device, dtype=dtype
+        ) * std
+        return {"refpoint": refpoint, "query_feat": query_feat}
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):

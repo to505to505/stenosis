@@ -1,0 +1,31 @@
+== DANN: centroid cosine distance (lower = closer) ==
+
+              A        B        C
+     A   0.0000   0.0943   0.0352
+     B   0.0943   0.0000   0.0665
+     C   0.0352   0.0665   0.0000
+
+== Headline (DANN, source A labeled + target B unlabeled) ==
+  d(A, B) = 0.0943   (target pair -- should collapse)
+  d(A, C) = 0.0352   (unseen external)
+  d(B, C) = 0.0665
+
+== 5-fold kNN(k=5,cosine) domain-id accuracy ==
+  3-way A/B/C       (chance=0.333): 0.9550
+  binary A vs B     (chance=0.500): 0.9630  (target -- should approach 0.500)
+  binary A vs C     (chance=0.500): 0.9750
+  binary B vs C     (chance=0.500): 0.9850
+
+== Comparison vs. baseline (no DANN) ==
+  d(A, B):  baseline (no DANN)=0.1850  dann=0.0943   delta=-0.0906
+  d(A, C):  baseline (no DANN)=0.0798  dann=0.0352   delta=-0.0446
+  d(B, C):  baseline (no DANN)=0.1692  dann=0.0665   delta=-0.1026
+  3-way kNN dom-id:  baseline (no DANN)=0.9900  dann=0.9550   delta=-0.0350 (lower = better mixing)
+  binary kNN A vs B: baseline (no DANN)=0.9865  dann=0.9630   delta=-0.0235
+
+== Comparison vs. MixStyle ==
+  d(A, B):  MixStyle=0.2345  dann=0.0943   delta=-0.1402
+  d(A, C):  MixStyle=0.1125  dann=0.0352   delta=-0.0773
+  d(B, C):  MixStyle=0.1795  dann=0.0665   delta=-0.1130
+  3-way kNN dom-id:  MixStyle=0.9907  dann=0.9550   delta=-0.0357 (lower = better mixing)
+  binary kNN A vs B: MixStyle=0.9875  dann=0.9630   delta=-0.0245

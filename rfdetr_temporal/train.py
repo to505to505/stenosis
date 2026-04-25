@@ -10,9 +10,12 @@ Usage:
 """
 
 import argparse
+import csv
 import json
+import os
 import random
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -20,10 +23,42 @@ import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
 
+os.environ["WANDB_CONSOLE"] = "off"
+os.environ["WANDB_SILENT"] = "true"
+
 from .config import Config
 from .dataset import get_dataloader
 from .model import TemporalRFDETR, _build_criterion
 from .evaluate import evaluate
+from .distill import FrozenRFDETRTeacher, distillation_loss
+
+
+def write_best_txt(run_dir: Path, best_metrics: dict, best_epoch: int, cfg: Config):
+    """Write best.txt with best metrics and training config."""
+    with open(run_dir / "best.txt", "w") as f:
+        f.write("Temporal RF-DETR Best Results\n")
+        f.write("=" * 40 + "\n\n")
+        f.write(f"Best mAP50:    {best_metrics.get('AP@0.5', 0):.5f}\n")
+        f.write(f"Best epoch:    {best_epoch}\n")
+
+        f.write("\n--- Metrics ---\n")
+        for k, v in sorted(best_metrics.items()):
+            f.write(f"{k:35s}  {v}\n")
+
+        f.write("\n--- Config ---\n")
+        for k, v in sorted(asdict(cfg).items()):
+            f.write(f"{str(k):35s}  {v}\n")
+
+
+def save_train_csv(run_dir: Path, history: list):
+    """Save training history as train.csv."""
+    if not history:
+        return
+    fieldnames = list(history[0].keys())
+    with open(run_dir / "train.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(history)
 
 
 def set_seed(seed: int):
@@ -55,13 +90,30 @@ def train(cfg: Config):
     print(f"Output: {run_dir}")
 
     # ── data ────────────────────────────────────────────────────────
-    train_loader = get_dataloader("train", cfg, shuffle=True)
+    use_teacher_frame = bool(cfg.distill_enabled)
+    train_loader = get_dataloader(
+        "train", cfg, shuffle=True, with_teacher_frame=use_teacher_frame,
+    )
     val_loader   = get_dataloader("valid", cfg, shuffle=False)
 
     # ── model ───────────────────────────────────────────────────────
     model = TemporalRFDETR(cfg).to(device)
     criterion, postprocess = _build_criterion(cfg)
     criterion = criterion.to(device)
+
+    # ── KD-DETR teacher (specific + general sampling) ──────────────
+    teacher = None
+    if cfg.distill_enabled:
+        teacher = FrozenRFDETRTeacher(cfg).to(device).eval()
+        model.register_teacher_queries(
+            teacher.refpoint_embed_weight, teacher.query_feat_weight,
+        )
+        Q_t = int(teacher.refpoint_embed_weight.shape[0])
+        print(
+            f"[KD-DETR] Teacher queries registered: Q_specific={Q_t}, "
+            f"general_enabled={cfg.distill_general_enabled}, "
+            f"Q_general={cfg.distill_num_general_queries}"
+        )
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total  = sum(p.numel() for p in model.parameters())
@@ -80,6 +132,15 @@ def train(cfg: Config):
 
     scaler = GradScaler(enabled=cfg.amp)
 
+    # ── save config ──────────────────────────────────────────────────
+    with open(run_dir / "config.json", "w") as f:
+        cfg_dict = asdict(cfg)
+        # Convert Path objects to strings for JSON serialization
+        for k, v in cfg_dict.items():
+            if isinstance(v, Path):
+                cfg_dict[k] = str(v)
+        json.dump(cfg_dict, f, indent=2)
+
     # ── wandb ───────────────────────────────────────────────────────
     if cfg.wandb_enabled:
         try:
@@ -87,7 +148,7 @@ def train(cfg: Config):
             wandb.init(
                 project=cfg.wandb_project,
                 name=cfg.run_name or run_dir.name,
-                config=vars(cfg),
+                config=asdict(cfg),
             )
         except ImportError:
             print("[WARN] wandb not installed, disabling")
@@ -95,6 +156,8 @@ def train(cfg: Config):
 
     # ── training loop ───────────────────────────────────────────────
     best_map50 = 0.0
+    best_metrics = {}
+    best_epoch = 0
     history = []
     global_step = 0
 
@@ -104,9 +167,15 @@ def train(cfg: Config):
         epoch_losses = {}
         t0 = time.time()
 
-        for batch_idx, (images, targets_list, _fnames) in enumerate(train_loader):
+        for batch_idx, batch in enumerate(train_loader):
             # images: (B, T, 3, H, W)
-            images = images.to(device)
+            if use_teacher_frame:
+                images, targets_list, teacher_centre, _fnames = batch
+                teacher_centre = teacher_centre.to(device, non_blocking=True)
+            else:
+                images, targets_list, _fnames = batch
+                teacher_centre = None
+            images = images.to(device, non_blocking=True)
 
             # Centre-frame targets for loss computation
             centre = cfg.T // 2
@@ -125,13 +194,67 @@ def train(cfg: Config):
             warmup_lr(optimizer, global_step, cfg.warmup_iters, base_lrs)
 
             with autocast(enabled=cfg.amp):
-                outputs = model(images)
+                # ── Branch 1: detection (student's own queries) ────
+                outputs = model(images, query_mode="student")
                 loss_dict = criterion(outputs, centre_targets)
                 weight_dict = criterion.weight_dict
                 loss = sum(
                     loss_dict[k] * weight_dict[k]
                     for k in loss_dict if k in weight_dict
                 )
+
+                # ── Branch 2 (KD-DETR specific sampling) ──────────
+                if cfg.distill_enabled:
+                    with torch.no_grad():
+                        teacher_out_spec = teacher(teacher_centre)
+                    # Inject the teacher's *final* decoder inputs (tgt +
+                    # post-topk refpoints) so the student's deformable
+                    # decoder samples at the teacher's spatial locations.
+                    student_kd_spec = model(
+                        images,
+                        query_mode="teacher",
+                        decoder_inputs={
+                            "tgt": teacher_out_spec["decoder_tgt"],
+                            "refpoints": teacher_out_spec["decoder_refpoints"],
+                        },
+                    )
+                    distill_spec = distillation_loss(
+                        student_kd_spec, teacher_out_spec, cfg,
+                    )
+                    loss = loss + cfg.distill_loss_weight * distill_spec["loss_distill"]
+                    for k, v in distill_spec.items():
+                        loss_dict[f"spec/{k}"] = v.detach()
+
+                # ── Branch 3 (KD-DETR general sampling) ───────────
+                if cfg.distill_enabled and cfg.distill_general_enabled:
+                    Q_g = int(cfg.distill_num_general_queries)
+                    gen_q = model.sample_general_queries(
+                        Q_g, device=device, dtype=images.dtype,
+                    )
+                    with torch.no_grad():
+                        teacher_out_gen = teacher.forward_general(
+                            teacher_centre,
+                            gen_q["refpoint"],
+                            gen_q["query_feat"],
+                            min_weight=cfg.distill_general_min_weight,
+                        )
+                    student_kd_gen = model(
+                        images,
+                        query_mode="general",
+                        general_queries=gen_q,
+                        decoder_inputs={
+                            "tgt": teacher_out_gen["decoder_tgt"],
+                            "refpoints": teacher_out_gen["decoder_refpoints"],
+                        },
+                    )
+                    distill_gen = distillation_loss(
+                        student_kd_gen, teacher_out_gen, cfg,
+                    )
+                    gen_w = cfg.distill_loss_weight * cfg.distill_general_loss_weight
+                    loss = loss + gen_w * distill_gen["loss_distill"]
+                    for k, v in distill_gen.items():
+                        loss_dict[f"gen/{k}"] = v.detach()
+
                 loss_scaled = loss / cfg.grad_accum_steps
 
             scaler.scale(loss_scaled).backward()
@@ -148,11 +271,19 @@ def train(cfg: Config):
             # Accumulate losses
             for k, v in loss_dict.items():
                 epoch_losses.setdefault(k, 0.0)
-                epoch_losses[k] += v.item()
+                epoch_losses[k] += float(v.item())
 
             if (batch_idx + 1) % cfg.log_interval == 0:
                 avg = loss.item()
                 print(f"  [{epoch+1}/{cfg.epochs}] step {batch_idx+1}/{len(train_loader)}  loss={avg:.4f}")
+
+            # Per-step wandb logging
+            if cfg.wandb_enabled and global_step % cfg.log_interval == 0:
+                import wandb
+                step_log = {"train/loss": loss.item(), "train/lr": optimizer.param_groups[0]["lr"]}
+                for k, v in loss_dict.items():
+                    step_log[f"train/{k}"] = v.item()
+                wandb.log(step_log, step=global_step)
 
         scheduler.step()
 
@@ -183,11 +314,16 @@ def train(cfg: Config):
 
             if cfg.wandb_enabled:
                 import wandb
-                wandb.log({"epoch": epoch + 1, "train_loss": train_loss, **metrics})
+                log_dict = {"epoch": epoch + 1, "train_loss": train_loss}
+                for k, v in metrics.items():
+                    log_dict[f"val/{k}"] = v
+                wandb.log(log_dict, step=global_step)
 
             # Save best
             if metrics["AP@0.5"] > best_map50:
                 best_map50 = metrics["AP@0.5"]
+                best_metrics = metrics.copy()
+                best_epoch = epoch + 1
                 torch.save(
                     {
                         "model": model.state_dict(),
@@ -208,8 +344,19 @@ def train(cfg: Config):
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
+    # ── save train.csv ──────────────────────────────────────────────
+    save_train_csv(run_dir, history)
+
+    # ── save best.txt ───────────────────────────────────────────────
+    write_best_txt(run_dir, best_metrics, best_epoch, cfg)
+    print(f"[INFO] Best metrics saved to {run_dir / 'best.txt'}")
+
     if cfg.wandb_enabled:
         import wandb
+        # Log best metrics as wandb summary
+        for k, v in best_metrics.items():
+            wandb.run.summary[f"best/{k}"] = v
+        wandb.run.summary["best/epoch"] = best_epoch
         wandb.finish()
 
     print(f"\nTraining complete. Best mAP50={best_map50:.4f}")
@@ -223,6 +370,7 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--T", type=int, default=5)
+    p.add_argument("--neighborhood-k", type=int, default=0)
     p.add_argument("--dataset", type=str, default="data/dataset2_split")
     p.add_argument("--checkpoint", type=str,
                    default="rfdetr_runs/dataset2_augs/checkpoint_best_total.pth")
@@ -233,18 +381,26 @@ def parse_args():
     p.add_argument("--temporal-layers", type=int, default=2)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--grad-accum", type=int, default=2)
+    p.add_argument("--img-size", type=int, default=None)
+    p.add_argument("--distill", action="store_true",
+                   help="Enable KD-DETR distillation (specific sampling).")
+    p.add_argument("--no-general", action="store_true",
+                   help="Disable KD-DETR general sampling branch.")
+    p.add_argument("--num-general-queries", type=int, default=None)
+    p.add_argument("--distill-teacher-ckpt", type=str, default=None)
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    cfg = Config(
+    cfg_kwargs = dict(
         data_root=Path(args.dataset),
         output_dir=Path(args.output_dir),
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
         T=args.T,
+        neighborhood_k=args.neighborhood_k,
         rfdetr_checkpoint=args.checkpoint,
         freeze_decoder=args.freeze_decoder,
         wandb_enabled=not args.no_wandb,
@@ -252,5 +408,14 @@ if __name__ == "__main__":
         temporal_attn_layers=args.temporal_layers,
         num_workers=args.num_workers,
         grad_accum_steps=args.grad_accum,
+        distill_enabled=bool(args.distill),
+        distill_general_enabled=bool(args.distill) and not args.no_general,
     )
+    if args.img_size is not None:
+        cfg_kwargs["img_size"] = int(args.img_size)
+    if args.num_general_queries is not None:
+        cfg_kwargs["distill_num_general_queries"] = int(args.num_general_queries)
+    if args.distill_teacher_ckpt is not None:
+        cfg_kwargs["distill_teacher_ckpt"] = args.distill_teacher_ckpt
+    cfg = Config(**cfg_kwargs)
     train(cfg)

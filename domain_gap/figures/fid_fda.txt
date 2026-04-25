@@ -1,0 +1,12 @@
+== Frechet Inception Distance (Inception-V3 pool3, lower = closer) ==
+
+  FID( A ,  B) =     47.095
+  FID(A* ,  B) =     52.154
+  FID( A ,  C) =     40.542
+  FID(A* ,  C) =     44.567
+  FID( B ,  C) =     37.794
+  FID( A , A*) =     17.296
+
+== Effect of FDA (negative = closer after adaptation) ==
+  delta FID(., B) = +5.059   (target domain)
+  delta FID(., C) = +4.026   (zero-shot external)

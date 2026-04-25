@@ -1,0 +1,1 @@
+cd /home/dsa/stenosis && python -m rfdetr_temporal.train   --dataset data/dataset2_split   --run-name temporal_small_t5_k0_distill_aligned   --checkpoint rfdetr_runs/rfdetr_small_arcade2x_512_reg/checkpoint_best_regular.pth   --img-size 512   --epochs 50   --batch-size 4   --grad-accum 2   --distill   --num-general-queries 100

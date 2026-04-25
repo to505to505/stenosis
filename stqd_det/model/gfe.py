@@ -120,7 +120,11 @@ class GFEAttention(nn.Module):
         Returns:
             v_enhanced: (N, S, C) — attention-enhanced tokens with residual.
         """
-        attn_out, _ = self.mha(v_curr, v_prev, v_next)  # (N, S, C)
+        # Force fp32 for MHA to prevent fp16 overflow in QK^T
+        with torch.amp.autocast("cuda", enabled=False):
+            attn_out, _ = self.mha(
+                v_curr.float(), v_prev.float(), v_next.float()
+            )  # (N, S, C)
 
         # Residual + LayerNorm
         v_enhanced = self.layer_norm(attn_out + v_curr)

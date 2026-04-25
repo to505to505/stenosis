@@ -23,7 +23,7 @@ torchrun \
     --model mae_vit_small_patch16 \
     --mask_ratio 0.50 \
     --norm_pix_loss \
-    --epochs 800 \
+    --epochs 400 \
     --warmup_epochs 40 \
     --blr 1.5e-4 \
     --weight_decay 0.05 \

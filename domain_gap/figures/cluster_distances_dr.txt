@@ -1,0 +1,24 @@
+== Domain-Randomization: centroid cosine distance ==
+
+              A        B        C
+     A   0.0000   0.1601   0.0724
+     B   0.1601   0.0000   0.0916
+     C   0.0724   0.0916   0.0000
+
+== Headline (Domain Randomization, source-only training) ==
+  d(A, B) = 0.1601
+  d(A, C) = 0.0724
+  d(B, C) = 0.0916
+  5-fold kNN(k=5,cosine) domain-id acc: 0.9783 (chance=0.333)
+
+== Comparison vs. baseline ==
+  d(A, B): baseline=0.1850  DR=0.1601   delta=-0.0249
+  d(A, C): baseline=0.0798  DR=0.0724   delta=-0.0074
+  d(B, C): baseline=0.1692  DR=0.0916   delta=-0.0775
+  kNN domain-id: baseline=0.9900  DR=0.9783   delta=-0.0117
+
+== Comparison vs. mixstyle ==
+  d(A, B): mixstyle=0.2345  DR=0.1601   delta=-0.0745
+  d(A, C): mixstyle=0.1125  DR=0.0724   delta=-0.0400
+  d(B, C): mixstyle=0.1795  DR=0.0916   delta=-0.0879
+  kNN domain-id: mixstyle=0.9907  DR=0.9783   delta=-0.0123

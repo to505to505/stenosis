@@ -95,8 +95,16 @@ class COCOEvalCallback(Callback):
         )
         kwargs["backend"] = "faster_coco_eval"
         self.map_metric = MeanAveragePrecision(iou_type=iou_type, **kwargs)
+        # Separate metric for IoU=0.30 evaluation (best-checkpoint selection).
+        self.map_metric_30 = MeanAveragePrecision(
+            iou_type="bbox",
+            iou_thresholds=[0.30],
+            max_detection_thresholds=[1, 10, self._max_dets],
+            backend="faster_coco_eval",
+        )
         # Separate metric for the EMA model; created lazily in on_validation_batch_end.
         self.map_metric_ema: Any = None
+        self.map_metric_ema_30: Any = None
 
     def on_fit_start(self, trainer: Any, pl_module: Any) -> None:
         """Pull class names from the DataModule once the datasets are set up.
@@ -164,6 +172,7 @@ class COCOEvalCallback(Callback):
         targets = self._convert_targets(outputs["targets"])
 
         self.map_metric.update(preds, targets)
+        self.map_metric_30.update(preds, targets)
 
         iou_type = "segm" if self._segmentation else "bbox"
         batch_matching = build_matching_data(preds, targets, iou_threshold=0.5, iou_type=iou_type)
@@ -190,6 +199,14 @@ class COCOEvalCallback(Callback):
                 ema_results = pl_module.postprocess(ema_outputs, orig_sizes)
             ema_preds = self._convert_preds(ema_results)
             self.map_metric_ema.update(ema_preds, targets)
+            if self.map_metric_ema_30 is None:
+                self.map_metric_ema_30 = MeanAveragePrecision(
+                    iou_type="bbox",
+                    iou_thresholds=[0.30],
+                    max_detection_thresholds=[1, 10, self._max_dets],
+                    backend="faster_coco_eval",
+                ).to(pl_module.device)
+            self.map_metric_ema_30.update(ema_preds, targets)
 
     def on_validation_epoch_end(self, trainer: Any, pl_module: Any) -> None:
         """Compute and log mAP and F1 metrics at the end of the validation epoch.
@@ -236,6 +253,7 @@ class COCOEvalCallback(Callback):
         targets = self._convert_targets(outputs["targets"])
 
         self.map_metric.update(preds, targets)
+        self.map_metric_30.update(preds, targets)
 
         iou_type = "segm" if self._segmentation else "bbox"
         batch_matching = build_matching_data(preds, targets, iou_threshold=0.5, iou_type=iou_type)
@@ -295,6 +313,12 @@ class COCOEvalCallback(Callback):
         trainer.callback_metrics[f"{split}/mAP_75"] = metrics[f"{pfx}map_75"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAR"] = metrics[mar_key].detach().cpu()
 
+        # mAP at IoU=0.30 — used for best-checkpoint selection.
+        metrics_30 = self.map_metric_30.compute()
+        pl_module.log(f"{split}/mAP_30", metrics_30["map"], prog_bar=True)
+        trainer.callback_metrics[f"{split}/mAP_30"] = metrics_30["map"].detach().cpu()
+        overall["mAP 30"] = float(metrics_30["map"])
+
         # EMA metrics — computed from a separate EMA forward pass accumulated
         # in on_validation_batch_end, so base and EMA values are independent.
         if self.map_metric_ema is not None:
@@ -306,6 +330,11 @@ class COCOEvalCallback(Callback):
             trainer.callback_metrics[f"{split}/ema_mAP_50_95"] = ema_metrics[f"{pfx}map"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAP_50"] = ema_metrics[f"{pfx}map_50"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAR"] = ema_metrics[ema_mar_key].detach().cpu()
+            if self.map_metric_ema_30 is not None:
+                ema_metrics_30 = self.map_metric_ema_30.compute()
+                pl_module.log(f"{split}/ema_mAP_30", ema_metrics_30["map"], prog_bar=True)
+                trainer.callback_metrics[f"{split}/ema_mAP_30"] = ema_metrics_30["map"].detach().cpu()
+                self.map_metric_ema_30.reset()
             self.map_metric_ema.reset()
 
         if self._segmentation:
@@ -384,6 +413,7 @@ class COCOEvalCallback(Callback):
 
         self._print_metrics_tables(trainer, split, overall, per_class)
         self.map_metric.reset()
+        self.map_metric_30.reset()
         self._f1_local = init_matching_accumulator()
 
     def _has_ema_callback(self, trainer: Any) -> bool:
@@ -572,6 +602,7 @@ class COCOEvalCallback(Callback):
                     ("50:95", _fmt(overall["mAP 50:95"])),
                     ("50", _fmt(overall["mAP 50"])),
                     ("75", _fmt(overall["mAP 75"])),
+                    ("30", _fmt(overall.get("mAP 30", float("nan")))),
                 ],
             ),
             ("mAR", [(mar_lbl, _fmt(overall[mar_key]))]),

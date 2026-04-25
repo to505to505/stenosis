@@ -157,8 +157,8 @@ def build_trainer(
     callbacks.append(
         BestModelCallback(
             output_dir=tc.output_dir,
-            monitor_regular="val/mAP_50",
-            monitor_ema="val/ema_mAP_50" if enable_ema else None,
+            monitor_regular="val/mAP_30",
+            monitor_ema="val/ema_mAP_30" if enable_ema else None,
             run_test=tc.run_test,
         )
     )
@@ -170,6 +170,8 @@ def build_trainer(
                 patience=tc.early_stopping_patience,
                 min_delta=tc.early_stopping_min_delta,
                 use_ema=tc.early_stopping_use_ema,
+                monitor_regular="val/mAP_30",
+                monitor_ema="val/ema_mAP_30",
             )
         )
 

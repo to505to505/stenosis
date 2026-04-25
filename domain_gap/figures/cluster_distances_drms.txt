@@ -1,0 +1,30 @@
+== DR + MixStyle: centroid cosine distance ==
+
+              A        B        C
+     A   0.0000   0.2508   0.1232
+     B   0.2508   0.0000   0.1164
+     C   0.1232   0.1164   0.0000
+
+== Headline (DR + MixStyle, source-only training) ==
+  d(A, B) = 0.2508
+  d(A, C) = 0.1232
+  d(B, C) = 0.1164
+  5-fold kNN(k=5,cosine) domain-id acc: 0.9903 (chance=0.333)
+
+== Comparison vs. baseline ==
+  d(A, B): baseline=0.1850  DR+MS=0.2508   delta=+0.0658
+  d(A, C): baseline=0.0798  DR+MS=0.1232   delta=+0.0434
+  d(B, C): baseline=0.1692  DR+MS=0.1164   delta=-0.0528
+  kNN domain-id: baseline=0.9900  DR+MS=0.9903   delta=+0.0003
+
+== Comparison vs. DR-only ==
+  d(A, B): DR-only=0.1601  DR+MS=0.2508   delta=+0.0907
+  d(A, C): DR-only=0.0724  DR+MS=0.1232   delta=+0.0508
+  d(B, C): DR-only=0.0916  DR+MS=0.1164   delta=+0.0248
+  kNN domain-id: DR-only=0.9783  DR+MS=0.9903   delta=+0.0120
+
+== Comparison vs. MixStyle ==
+  d(A, B): MixStyle=0.2345  DR+MS=0.2508   delta=+0.0162
+  d(A, C): MixStyle=0.1125  DR+MS=0.1232   delta=+0.0107
+  d(B, C): MixStyle=0.1795  DR+MS=0.1164   delta=-0.0631
+  kNN domain-id: MixStyle=0.9907  DR+MS=0.9903   delta=-0.0003

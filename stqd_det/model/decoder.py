@@ -82,9 +82,12 @@ class DecoderLayer(nn.Module):
             cls_logits: (B, P, num_classes) classification logits.
             box_deltas: (B, P, 4) box regression deltas.
         """
-        # Self-attention
+        # Self-attention (fp32 to prevent QK^T overflow in fp16)
         residual = features
-        attn_out, _ = self.self_attn(features, features, features)
+        with torch.amp.autocast("cuda", enabled=False):
+            attn_out, _ = self.self_attn(
+                features.float(), features.float(), features.float()
+            )
         features = self.norm1(residual + self.dropout1(attn_out))
 
         # FFN

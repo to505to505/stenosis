@@ -69,10 +69,11 @@ def train_one_epoch(
 
         if not torch.isfinite(total_loss):
             # Do NOT backward on NaN — that would inject NaN into every
-            # parameter and kill the run permanently.  Just bump the scaler
-            # down so it can recover from fp16 overflow.
+            # parameter and kill the run permanently.
+            # Manually halve the scale (min 1.0 to avoid dead scale=0).
             optimizer.zero_grad(set_to_none=True)
-            scaler.update(scaler.get_scale() * scaler.get_backoff_factor())
+            new_scale = max(scaler.get_scale() * scaler.get_backoff_factor(), 1.0)
+            scaler.update(new_scale)
             print(
                 f"WARNING: Non-finite loss at step {global_step}, "
                 f"scale→{scaler.get_scale():.0f}"
