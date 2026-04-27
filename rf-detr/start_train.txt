@@ -1,0 +1,1 @@
+conda activate stenosis && python train_rfdetr.py --model-size large --dataset-dir data/combined_arcade2x_trainval_dataset2 --name rfdetr_large_arcade2x_704_nq50 --num-queries 50 --batch-size 8 --grad-accum 8 --epochs 150 --warmup-epochs 8 --drop-path 0.1 --lr-min-factor 0.01 --early-stopping-use-ema --patience 25 --wandb-project rfdetr-stenosis 2>&1 

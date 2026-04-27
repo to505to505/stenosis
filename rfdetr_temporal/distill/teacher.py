@@ -125,6 +125,28 @@ class FrozenRFDETRTeacher(nn.Module):
             _decoder_pre_hook, with_kwargs=True,
         )
 
+        # Forward hook: capture the decoder's *output* — ``hs`` is
+        # ``(num_layers, B, Q, D)``; we keep the last layer ``hs[-1]``
+        # (B, Q, D), which is the embedding fed into the classification
+        # and bounding-box heads.  Required by CRRCD relational distillation.
+        def _decoder_post_hook(_module, _args, _kwargs, output):
+            # rfdetr's TransformerDecoder.forward returns either:
+            #   • [stacked_intermediate, stacked_refpoints]  (return_intermediate=True)
+            #   • a single tensor (export path)
+            # In the intermediate case ``stacked_intermediate`` has shape
+            # (num_layers, B, Q, D); we keep the last layer (B, Q, D).
+            if isinstance(output, (list, tuple)) and len(output) >= 1:
+                hs = output[0]
+            else:
+                hs = output
+            if hs is not None:
+                self._captured_decoder_inputs["hs"] = hs[-1].detach()
+            return None
+
+        self.lwdetr.transformer.decoder.register_forward_hook(
+            _decoder_post_hook, with_kwargs=True,
+        )
+
     @property
     def hidden_dim(self) -> int:
         return int(self.lwdetr.transformer.d_model)
@@ -244,6 +266,8 @@ class FrozenRFDETRTeacher(nn.Module):
             result["decoder_tgt"] = self._captured_decoder_inputs["tgt"]
         if "refpoints" in self._captured_decoder_inputs:
             result["decoder_refpoints"] = self._captured_decoder_inputs["refpoints"]
+        if "hs" in self._captured_decoder_inputs:
+            result["decoder_hs"] = self._captured_decoder_inputs["hs"]
         # Reset for the next call so we don't leak stale tensors.
         self._captured_decoder_inputs = {}
         return result

@@ -107,3 +107,24 @@ class Config:
     # zero (matching LWDETR.refpoint_embed init) so two-stage proposals
     # determine the spatial coverage.
     distill_general_query_std: float = 0.02
+
+    # ── CRRCD: Cross-Resolution Relational Contrastive Distillation ───
+    # Adds a relational contrastive loss between the (frozen) HR teacher
+    # decoder embeddings and the (trainable) LR student decoder embeddings
+    # produced in the KD-DETR specific-sampling branch.  Two small MLPs
+    # (Feature Relation Modules, FRM) model relationships between
+    # foreground / background query slots:
+    #   F^t  : (e^t_i, e^t_j)  →  v^t_{i,j}
+    #   F^ts : (e^t_i, e^s_j)  →  v^{t,s}_{i,j}
+    # A sigmoid-NCE critic forces v^{t,s} to mimic v^t at matching slot
+    # pairs, structurally aligning the LR student's decoder space to the
+    # HR teacher's. Requires distill_enabled=True (uses the same Branch 2
+    # forward + slot alignment).
+    crrcd_enabled: bool = False
+    crrcd_loss_weight: float = 2.0       # β in L_total = L_det + α·L_kd + β·L_rcd
+    crrcd_relation_dim: int = 256        # FRM output dim
+    crrcd_hidden_dim: int = 256          # FRM hidden width (MLP)
+    crrcd_num_fg: int = 16               # K_fg — top-K teacher-confident slots
+    crrcd_num_bg: int = 32               # K_bg — bottom-K teacher-confident slots
+    crrcd_num_negatives: int = 16        # n   — negatives per anchor (0 = use all K_bg-1)
+    crrcd_temperature: float = 0.1       # τ for sigmoid critic h(u,v)=σ(cos(u,v)/τ)

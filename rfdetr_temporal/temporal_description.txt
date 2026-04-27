@@ -1,0 +1,444 @@
+================================================================================
+  TEMPORAL RF-DETR: ПОДРОБНОЕ ОПИСАНИЕ АРХИТЕКТУРЫ
+  Файл: rfdetr_temporal/
+  Дата: апрель 2026
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+1. ЗАЧЕМ TEMPORAL RF-DETR?
+────────────────────────────────────────────────────────────────────────────────
+
+Обычный RF-DETR обрабатывает каждый кадр независимо. В задаче детекции стеноза
+коронарных артерий это проблема по двум причинам:
+
+  1. Кардиальное движение. Артерия смещается от кадра к кадру, поэтому стеноз
+     на конкретном пикселе виден лучше/хуже в разные фазы сердечного цикла.
+  2. Информационная бедность одного кадра. Малый, слабоконтрастный стеноз
+     можно «подтвердить» соседними кадрами, где он тоже присутствует, пусть
+     и со смещением.
+
+Temporal RF-DETR решает эту проблему: берёт окно из T=5 последовательных кадров,
+объединяет их признаки через специальный механизм внимания и детектирует только
+по центральному кадру.
+
+────────────────────────────────────────────────────────────────────────────────
+2. ОТЛИЧИЯ ОТ ОБЫЧНОГО RF-DETR (структурные)
+────────────────────────────────────────────────────────────────────────────────
+
+  Обычный RF-DETR                    Temporal RF-DETR
+  ─────────────────────────────────  ──────────────────────────────────────────
+  Вход: (B, 3, H, W)                 Вход: (B, T, 3, H, W)  — T=5 кадров
+  Backbone → 1 уровень признаков     Backbone на B*T кадрах → T уровней на кадр
+  Признаки напрямую в decoder        Temporal Fusion → enriched центр. кадр
+  group_detr=13 во время обучения    group_detr=13 для branch-1; =1 для KD-веток
+  Нет дистилляции                    Опциональная KD-DETR дистилляция (Large→Small)
+  Обучаются все параметры            Backbone заморожен, обучается Fusion + Decoder
+
+────────────────────────────────────────────────────────────────────────────────
+3. BACKBONE: ОБЩИЙ DINOV2
+────────────────────────────────────────────────────────────────────────────────
+
+Используется RF-DETR-Small (RFDETRSmallConfig), внутри которого DINOv2 + одноуровневый
+проектор (projector_scale=["P4"]).
+
+Все B*T кадров прогоняются через backbone одним вызовом:
+
+    all_frames = frames.reshape(B*T, 3, H, W)
+    features, poss = self.backbone(nested_tensor_from_tensor_list(all_frames))
+
+Параметры backbone заморожены по умолчанию (cfg.freeze_backbone=True), т.е.
+DINOv2 не обновляется — он лишь поставляет признаки.
+
+────────────────────────────────────────────────────────────────────────────────
+4. TEMPORAL FUSION (ключевой новый модуль)
+────────────────────────────────────────────────────────────────────────────────
+
+Класс: TemporalFusion (model.py)
+
+Принимает признаки (B, T, C, H, W) — все T кадров с одного уровня backbone.
+Возвращает обогащённые признаки центрального кадра (B, C, H, W).
+
+4.1 Механизм: Neighbourhood Temporal Cross-Attention
+──────────────────────────────────────────────────────
+
+Для каждой пространственной позиции (h, w) центрального кадра:
+
+  • Query  : один токен из центрального кадра: shape (1, C)
+  • Key/V  : T · (2k+1)² токенов из локального окна (h±k, w±k)
+             по ВСЕМ T кадрам: shape (T·K², C)
+
+  Параметр k (neighborhood_k) задаёт радиус окна.
+  Если k=0: окно 1×1, т.е. берётся ровно один пиксель из каждого кадра
+            (no spatial shift compensation — только временной контекст).
+  Если k=1: окно 3×3, компенсирует субпиксельное смещение объекта.
+
+  Реализация: F.unfold для быстрого извлечения локального окна
+    x: (B*T, C, H, W)
+    unfolded = F.unfold(x, kernel_size=K, padding=k)  → (B*T, C*K², H*W)
+    → reshape → (B*HW, T*K², C)  — KV тензор
+
+  TransformerDecoder (num_layers=2, batch_first=True) реализует cross-attention
+  Q→KV для всех позиций (B*HW) параллельно.
+
+4.2 Позиционные эмбеддинги KV
+───────────────────────────────
+
+  temporal_pos  : nn.Embedding(T, C)      — для временного индекса
+  spatial_pos   : nn.Embedding(K², C)     — для пространственного смещения внутри окна
+  pos_kv = temporal_pos[t] + spatial_pos[offset_idx]  — суммируются
+
+4.3 Количество модулей TemporalFusion
+────────────────────────────────────────
+
+  По одному на каждый уровень backbone. В RF-DETR-Small с P4 — один уровень,
+  значит один TemporalFusion. Хранится в nn.ModuleList.
+
+────────────────────────────────────────────────────────────────────────────────
+5. DECODER И ГОЛОВЫ
+────────────────────────────────────────────────────────────────────────────────
+
+После Temporal Fusion центральный кадр имеет признаки (B, C, H, W) —
+они идут в стандартный RF-DETR трансформер (encoder + two-stage + decoder).
+
+Компоненты взяты напрямую из предобученного RF-DETR-Small:
+  self.backbone          — DINOv2 + проектор
+  self.transformer       — Transformer (encoder + decoder)
+  self.class_embed       — nn.Linear (классификатор)
+  self.bbox_embed        — MLP (регрессор)
+  self.refpoint_embed    — nn.Embedding (learnable anchors)
+  self.query_feat        — nn.Embedding (content queries)
+
+Two-stage: энкодер предлагает топ-k предложений, которые смешиваются с
+learnable offset для инициализации слотов decoder.
+
+Все эти параметры обучаемы (кроме backbone) при обычном обучении.
+
+────────────────────────────────────────────────────────────────────────────────
+6. ДАТАСЕТ: СКОЛЬЗЯЩИЕ ОКНА ПОСЛЕДОВАТЕЛЬНОСТЕЙ
+────────────────────────────────────────────────────────────────────────────────
+
+Класс: TemporalStenosisDataset (dataset.py)
+
+Имя файла: {patient_id}_{seq_id}_{frame_num}_bmp_jpg.rf.<uuid>.jpg
+            (также поддерживается CADICA: p{N}_v{M}_{frame}.png)
+
+Индексирование: сортировка по (patient_id, seq_id, frame_num) → списки путей
+                по каждой уникальной последовательности.
+
+Формирование окон (build_windows):
+  • Если len(seq) ≥ T: все подпоследовательности длины T (скользящее окно)
+  • Если len(seq) < T: паддинг последним кадром до T
+
+Каждое окно: T путей к файлам. Центральный кадр = окно[T//2] = окно[2] при T=5.
+Аннотации нужны только для центрального кадра (только он участвует в loss).
+
+Аугментация:
+  • Без дистилляции: единый пайплайн (геометрия + фотометрия) через
+    albumentations ReplayCompose — одинаковые трансформации для всех T кадров.
+  • С дистилляцией (with_teacher_frame=True):
+      1. geom_aug (HFlip/VFlip/Rotate/Affine) — ReplayCompose, replay на все кадры.
+      2. photo_aug (Brightness/Contrast/CLAHE/Blur/Noise) — только студентские кадры.
+      3. Teacher центральный кадр @ 704px получает тот же геометрический replay,
+         затем force-resize обратно в 704×704 (геометрия совпадает с студентом).
+
+Возвращает:
+  • Без дистилляции: (images [B,T,3,H,W], targets_list, filenames)
+  • С дистилляцией:  (images [B,T,3,H,W], targets_list, teacher_centre [B,3,704,704], filenames)
+
+────────────────────────────────────────────────────────────────────────────────
+7. ПОЛНЫЙ FORWARD PASS (ИНФЕРЕНС / DETECTION)
+────────────────────────────────────────────────────────────────────────────────
+
+def forward(frames: (B,T,3,H,W), query_mode="student"):
+
+  1. Backbone на всех B*T кадрах → features[(B*T, C, h, w)]
+  2. TemporalFusion per level:
+       src_bt = src.reshape(B, T, C, h, w)
+       fused  = temporal_fusions[lvl](src_bt)     → (B, C, h, w)
+       mask   = centre frame mask
+       pos    = centre frame position embeddings
+  3. Transformer(fused_srcs, fused_masks, fused_poss,
+                 refpoint_embed_weight, query_feat_weight)
+       → hs (num_layers, B, Q, D), ref_unsigmoid
+  4. Heads:
+       outputs_coord = (bbox_embed(hs) + ref_unsigmoid).sigmoid()
+       outputs_class = class_embed(hs)
+  5. Возвращает {"pred_logits": (B,Q,K), "pred_boxes": (B,Q,4)}
+
+────────────────────────────────────────────────────────────────────────────────
+8. РЕЖИМЫ QUERY (query_mode)
+────────────────────────────────────────────────────────────────────────────────
+
+Модель поддерживает три режима (используются в обучении для KD-DETR):
+
+  "student"  — learnable refpoint_embed + query_feat (стандартный режим)
+               group_detr=13 (train) / 1 (eval)
+               Обучает все trainable параметры.
+
+  "teacher"  — замороженные буферы teacher_refpoint + teacher_query_feat
+               group_detr=1 принудительно
+               Используется в Branch 2 (KD Specific Sampling)
+               НЕ обучает refpoint_embed/query_feat (они — буферы, не параметры).
+
+  "general"  — случайные queries, переданные через general_queries dict
+               group_detr=1 принудительно
+               refpoint = zeros(Q_g, 4);  query_feat = N(0, 0.02) * hidden_dim
+               Используется в Branch 3 (KD General Sampling)
+
+────────────────────────────────────────────────────────────────────────────────
+9. ДИСТИЛЛЯЦИЯ: KD-DETR (ОПЦИОНАЛЬНО, --distill)
+────────────────────────────────────────────────────────────────────────────────
+
+Схема: HR Teacher (RF-DETR-Large @ 704px) → LR Student (RF-DETR-Small @ 512px + Temporal Fusion)
+
+9.1 FrozenRFDETRTeacher (distill/teacher.py)
+──────────────────────────────────────────────
+
+  Архитектура: RFDETRLarge, num_classes=1, num_queries=300
+  Чекпоинт:    rfdetr_runs/rfdetr_large_arcade2x_704_reg/checkpoint_best_total.pth
+  Статус:      eval() + requires_grad=False + .train() всегда возвращает eval
+
+  Экспортирует буферы:
+    refpoint_embed_weight  (300, 4)    — обученные anchor-points
+    query_feat_weight      (300, 256)  — обученные content queries
+
+  Хуки:
+    forward_pre_hook → сохраняет decoder_tgt (B, Q, D) + decoder_refpoints (B, Q, 4)
+                       (финальные входы в decoder, ПОСЛЕ двухстадийного отбора)
+    forward_post_hook → сохраняет decoder_hs[-1] (B, Q, D) — последний слой decoder
+
+  Метод forward(centre_clean):
+    Возвращает:
+      pred_logits        (B, Q, K_t)   — логиты детекции
+      pred_boxes         (B, Q, 4)     — normalised cxcywh боксы
+      foreground_weight  (B, Q)        — max_k sigmoid(logit_{i,k}) — уверенность
+      decoder_tgt        (B, Q, D)     — captured pre-hook tgt
+      decoder_refpoints  (B, Q, 4)     — captured pre-hook refpoints
+      decoder_hs         (B, Q, D)     — captured post-hook last layer hs
+
+9.2 Slot Alignment: Pre-hook инъекция
+───────────────────────────────────────
+
+Проблема: двустадийный RF-DETR смешивает learnable offset с encoder topk-предложениями.
+Если студенту просто дать teacher-queries, encoder студента (на LR признаках) вычислит
+свои topk и геометрически слоты не совпадут с учителем.
+
+Решение: учитель возвращает decoder_tgt и decoder_refpoints — это КОНЕЧНЫЕ входы
+в decoder учителя, уже после всего двустадийного вычисления. Студент перехватывает
+их через pre-hook ПЕРЕД своим decoder:
+
+    self.transformer.decoder.register_forward_pre_hook(
+        _decoder_inject_pre_hook, with_kwargs=True
+    )
+
+    def _decoder_inject_pre_hook(_module, args, kwargs):
+        new_args = (inj["tgt"], *args[1:])          # подменяем tgt
+        new_kwargs["refpoints_unsigmoid"] = inj["refpoints"]  # подменяем anchors
+        return new_args, new_kwargs
+
+Backbone + encoder студента всё равно работают (дают memory для deformable attention),
+но ГЕОМЕТРИЯ СЛОТОВ полностью определяется учителем. Слот i и у учителя, и у студента
+нацелен на одну пространственную область → предсказания slot-aligned → можно напрямую
+сравнивать без венгерского алгоритма.
+
+9.3 Три ветки обучения на каждый шаг
+───────────────────────────────────────
+
+  Branch 1 — Detection (всегда):
+    outputs = model(images, query_mode="student")
+    loss += SetCriterion(outputs, centre_targets)  # Hungarian matching
+
+  Branch 2 — KD Specific Sampling (если --distill):
+    teacher_out = teacher(teacher_centre)           # no_grad, 300 слотов
+    student_out = model(images, query_mode="teacher",
+                        decoder_inputs={"tgt": teacher_out["decoder_tgt"],
+                                        "refpoints": teacher_out["decoder_refpoints"]})
+    loss += distill_loss_weight * distillation_loss(student_out, teacher_out, cfg)
+
+  Branch 3 — KD General Sampling (если --distill --num-general-queries N):
+    gen_q = model.sample_general_queries(Q_g=100)   # zeros + N(0,0.02)
+    teacher_out_gen = teacher.forward_general(teacher_centre, gen_q)  # no_grad
+    student_out_gen = model(images, query_mode="general", general_queries=gen_q,
+                            decoder_inputs={...})
+    loss += distill_loss_weight * distill_general_loss_weight * distillation_loss(...)
+
+  Итого: loss = L_det + 1.0·L_spec + 0.5·L_gen
+
+9.4 Функция потерь дистилляции (distill/losses.py)
+────────────────────────────────────────────────────
+
+  Для каждого слота i: w_i = max_k sigmoid(teacher_logit_{i,k})
+  (высокий w_i = учитель уверен в объекте, низкий = фон)
+
+  Все потери взвешены: Σ(w_i · loss_i) / Σ(w_i)
+
+  L_kl  — Bernoulli KL(p_t || p_s):
+    p_t, p_s = sigmoid(logit / T)
+    KL = p_t·log(p_t/p_s) + (1-p_t)·log((1-p_t)/(1-p_s))
+    Умножается на T² (конвенция Hinton — стабилизирует градиент при T≠1)
+    Если K_student ≠ K_teacher: обе стороны сворачиваются к foreground prob (amax).
+
+  L_l1  — L1 на normalised cxcywh:
+    |s_boxes - t_boxes|_1  (сумма по 4 координатам)
+
+  L_giou — 1 − GIoU (element-wise, не pairwise):
+    вычисляется через _cxcywh_to_xyxy + пересечение/объединение/охватывающий прямоугольник
+
+  L_distill = 2.0·L_kl + 5.0·L_l1 + 2.0·L_giou   (веса по умолчанию)
+
+────────────────────────────────────────────────────────────────────────────────
+10. CRRCD: CROSS-RESOLUTION RELATIONAL CONTRASTIVE DISTILLATION (--crrcd)
+────────────────────────────────────────────────────────────────────────────────
+
+Класс: CRRCDLoss (distill/crrcd.py)
+
+Требует: distill_enabled=True (использует slot-aligned Branch 2 embeddings).
+
+Идея: принудить студента воспроизводить не только ПОЗИЦИИ боксов (как L_l1/GIoU),
+но и СТРУКТУРУ ОТНОШЕНИЙ между слотами в пространстве decoder embeddings.
+
+10.1 Компоненты
+─────────────────
+
+  e^t (B, Q, D) — последний слой decoder учителя (детачирован)
+  e^s (B, Q, D) — последний слой decoder студента (с градиентом)
+                  (захватывается через forward_post_hook → _captured_decoder_hs)
+
+  Два Feature Relation Module (FRM), каждый: MLP(d_in, d_hidden, d_out):
+    F^t  : (e^t_i - e^t_j)  →  v^t_{i,j}        (teacher–teacher)
+    F^ts : (e^t_i - e^s_j)  →  v^{t,s}_{i,j}    (teacher–student)
+
+10.2 Выборка слотов
+─────────────────────
+
+  Сортировка по foreground_weight:
+    fg_idx: top-K_fg  (K_fg=16 по умолчанию) — наиболее уверенные слоты (foreground)
+    bg_idx: bottom-K_bg (K_bg=32) — наименее уверенные слоты (background)
+
+  Отношения вычисляются между fg (anchors) и bg (reference):
+    diff_t  = e^t[fg, :] - e^t[bg, :]     → (B, K_fg, K_bg, D)
+    diff_ts = e^t[fg, :] - e^s[bg, :]     → (B, K_fg, K_bg, D)
+
+  Важно: e^s фигурирует в diff_ts → градиент идёт в студента.
+         e^t детачирован → учитель не трогается.
+
+10.3 Sigmoid-NCE Loss
+─────────────────────
+
+  sim = cosine(v_t, v_ts) / τ   → (B, K_fg, K_bg, K_bg)  (последние две dim: j, k)
+
+  Positive: диагональ (j == k) → log σ(sim[j,j])
+  Negative: j ≠ k → log (1 - σ(sim[j,k])) = log σ(-sim[j,k])
+
+  L_rcd = -(mean(log_pos) + mean(Σ_{k≠j} log_neg))
+
+  n_neg=16: субсэмплирование негативных, если K_bg-1 > n_neg.
+
+  В общем loss: L_total += crrcd_loss_weight(=2.0) · L_rcd
+
+────────────────────────────────────────────────────────────────────────────────
+11. ОБУЧЕНИЕ: ОПТИМИЗАТОР И РАСПИСАНИЕ
+────────────────────────────────────────────────────────────────────────────────
+
+Оптимизатор: AdamW, weight_decay=1e-4
+
+Группы параметров (разные LR):
+  temporal_fusions.*     → lr=1e-4  (основной)
+  transformer.*, heads   → lr=1e-4  (основной)
+  backbone.*             → lr=1e-5  (если не заморожен)
+
+LR расписание:
+  Warmup: линейный рост от 0 до base_lr за warmup_iters=500 шагов
+  MultiStepLR: × gamma=0.1 на epoch 30 и 40 (из 50)
+
+Gradient clipping: max_norm=0.1
+Grad accumulation: grad_accum_steps=2 (эффективный batch = batch_size * 2)
+AMP: torch.cuda.amp.autocast + GradScaler
+
+────────────────────────────────────────────────────────────────────────────────
+12. ИЗОЛЯЦИЯ ГРАДИЕНТОВ
+────────────────────────────────────────────────────────────────────────────────
+
+  Параметр                   Branch1(det)   Branch2(spec)   Branch3(gen)
+  ─────────────────────────────────────────────────────────────────────────
+  student.refpoint_embed     ✅ обучается   None (буфер)    None (буфер)
+  student.query_feat         ✅ обучается   None (буфер)    None (буфер)
+  temporal_fusions           ✅             ✅               ✅
+  transformer.decoder        ✅             ✅               ✅
+  teacher.*                  —              0 (no_grad)      0 (no_grad)
+
+  Вывод: detection-queries обучаются ТОЛЬКО через Hungarian loss.
+         Temporal fusion и decoder обучаются ТРЕМЯ ветками одновременно.
+
+────────────────────────────────────────────────────────────────────────────────
+13. ЧЕКПОИНТЫ
+────────────────────────────────────────────────────────────────────────────────
+
+Сохраняются в rfdetr_temporal/runs/<run_name>/:
+  checkpoint_best_map50.pth    — лучший по mAP@0.5
+  checkpoint_last.pth          — последний epoch
+  config.json                  — всё содержимое Config
+  best.txt                     — best metrics + config в текстовом виде
+  train.csv                    — история обучения по epoch
+
+Формат чекпоинта:
+  {"model": state_dict, "epoch": int, "best_map50": float, **metrics}
+
+────────────────────────────────────────────────────────────────────────────────
+14. ИНФЕРЕНС И МЕТРИКИ
+────────────────────────────────────────────────────────────────────────────────
+
+evaluate.py: COCO-style mAP на центральных кадрах валидационных окон.
+
+Модель работает в eval-режиме с query_mode="student".
+score_thresh=0.05, NMS-порог=0.5 (torchvision.ops.nms).
+
+Метрики:
+  AP@0.5       — основная метрика для выбора best checkpoint
+  AP@0.5:0.95  — средняя по IoU порогам 0.5..0.95 (шаг 0.05)
+  Recall@0.5   — максимальный recall при данном IoU
+  F1           — при оптимальном score threshold
+
+Файл validation.txt — ручные заметки по валидации.
+
+────────────────────────────────────────────────────────────────────────────────
+15. СТРУКТУРА ФАЙЛОВ rfdetr_temporal/
+────────────────────────────────────────────────────────────────────────────────
+
+  __init__.py            — пустой пакет
+  config.py              — датакласс Config с ~60 полями (пути, размеры, LR, дистилляция)
+  model.py               — TemporalFusion, TemporalRFDETR, _build_rfdetr_from_checkpoint
+  dataset.py             — TemporalStenosisDataset, build_sequence_index, build_windows,
+                           аугментации (albumentations ReplayCompose)
+  train.py               — train() loop: 3 branch, wandb, scheduler, checkpoints
+  evaluate.py            — evaluate_map(), COCO-style AP computation
+  distill/
+    __init__.py          — импортирует FrozenRFDETRTeacher, distillation_loss, CRRCDLoss
+    teacher.py           — FrozenRFDETRTeacher + хуки захвата tgt/refpoints/hs
+    losses.py            — distillation_loss() = weighted KL + L1 + GIoU
+    crrcd.py             — CRRCDLoss + _RelationMLP
+    DISTILLATION.md      — подробное описание алгоритма дистилляции (на русском)
+    best_base_distill.txt — записи лучших результатов с дистилляцией
+
+────────────────────────────────────────────────────────────────────────────────
+16. ТИПИЧНАЯ КОМАНДНАЯ СТРОКА
+────────────────────────────────────────────────────────────────────────────────
+
+  # Базовое обучение (без дистилляции):
+  python -m rfdetr_temporal.train \
+    --dataset data/dataset2_split \
+    --run-name temporal_small_t5_k0 \
+    --checkpoint rfdetr_runs/rfdetr_small_arcade2x_512_reg/checkpoint_best_regular.pth \
+    --img-size 512 --epochs 50 --batch-size 4 --grad-accum 2
+
+  # С дистилляцией + CRRCD:
+  python -m rfdetr_temporal.train \
+    --dataset data/dataset2_split \
+    --run-name temporal_small_t5_k0_distill_aligned_crrcd \
+    --checkpoint rfdetr_runs/rfdetr_small_arcade2x_512_reg/checkpoint_best_regular.pth \
+    --img-size 512 --epochs 50 --batch-size 4 --grad-accum 2 \
+    --distill --num-general-queries 100 \
+    --crrcd --crrcd-weight 2.0 --crrcd-num-fg 16 --crrcd-num-bg 32 \
+    --crrcd-num-negatives 16 --crrcd-temperature 0.1
+
+================================================================================

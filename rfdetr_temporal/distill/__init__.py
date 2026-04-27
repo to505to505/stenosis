@@ -2,5 +2,6 @@
 
 from .teacher import FrozenRFDETRTeacher
 from .losses import distillation_loss
+from .crrcd import CRRCDLoss
 
-__all__ = ["FrozenRFDETRTeacher", "distillation_loss"]
+__all__ = ["FrozenRFDETRTeacher", "distillation_loss", "CRRCDLoss"]

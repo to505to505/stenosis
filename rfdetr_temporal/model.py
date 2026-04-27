@@ -263,6 +263,30 @@ class TemporalRFDETR(nn.Module):
             _decoder_inject_pre_hook, with_kwargs=True,
         )
 
+        # ── Decoder output capture (CRRCD relational distillation) ──
+        # Stores the last decoder layer's hidden state (B, Q, D) — i.e. the
+        # embedding fed into the class / box heads.  Reset before every
+        # forward; CRRCD reads it after the Branch-2 forward.
+        self._captured_decoder_hs: torch.Tensor | None = None
+
+        def _decoder_capture_post_hook(_module, _args, _kwargs, output):
+            # rfdetr's TransformerDecoder returns [stacked_hs, stacked_refs]
+            # when ``return_intermediate=True`` — see
+            # rfdetr/models/transformer.py::TransformerDecoder.forward.
+            if isinstance(output, (list, tuple)) and len(output) >= 1:
+                hs = output[0]
+            else:
+                hs = output
+            if hs is not None:
+                # Keep the graph: student embeddings carry gradient back into
+                # the decoder + temporal fusion through the CRRCD loss.
+                self._captured_decoder_hs = hs[-1]
+            return None
+
+        self.transformer.decoder.register_forward_hook(
+            _decoder_capture_post_hook, with_kwargs=True,
+        )
+
     # ─────────────────────────────────────────────────────────────────
     #  KD-DETR helpers
     # ─────────────────────────────────────────────────────────────────
@@ -352,6 +376,9 @@ class TemporalRFDETR(nn.Module):
         """
         assert query_mode in ("student", "teacher", "general"), query_mode
         B, T, C, H, W = frames.shape
+
+        # Reset the decoder hidden-state capture (used by CRRCD).
+        self._captured_decoder_hs = None
 
         # ── 1. Run backbone on all frames simultaneously ────────────
         all_frames = frames.reshape(B * T, C, H, W)

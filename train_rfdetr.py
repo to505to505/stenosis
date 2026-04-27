@@ -333,6 +333,10 @@ def main():
     parser.add_argument("--wandb-project", type=str, default="rfdetr-stenosis")
     parser.add_argument("--no-wandb", action="store_true", help="Disable W&B logging")
 
+    # Model architecture
+    parser.add_argument("--num-queries", type=int, default=None,
+                        help="Number of object queries (default: model default, e.g. 300 for Large)")
+
     # Hardware
     parser.add_argument("--device", type=str, default="0",
                         help="GPU device index or 'cpu'")
@@ -352,8 +356,11 @@ def main():
 
     # ── Build model ──
     ModelClass = get_model_class(args.model_size)
-    model = ModelClass()
-    print(f"[INFO] Model: {MODEL_VARIANTS[args.model_size]}")
+    model_kwargs = {}
+    if args.num_queries is not None:
+        model_kwargs["num_queries"] = args.num_queries
+    model = ModelClass(**model_kwargs)
+    print(f"[INFO] Model: {MODEL_VARIANTS[args.model_size]}" + (f" (num_queries={args.num_queries})" if args.num_queries else ""))
 
     # ── Load custom backbone weights ──
     if args.pretrained_backbone:

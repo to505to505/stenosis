@@ -30,7 +30,7 @@ from .config import Config
 from .dataset import get_dataloader
 from .model import TemporalRFDETR, _build_criterion
 from .evaluate import evaluate
-from .distill import FrozenRFDETRTeacher, distillation_loss
+from .distill import FrozenRFDETRTeacher, distillation_loss, CRRCDLoss
 
 
 def write_best_txt(run_dir: Path, best_metrics: dict, best_epoch: int, cfg: Config):
@@ -103,6 +103,7 @@ def train(cfg: Config):
 
     # ── KD-DETR teacher (specific + general sampling) ──────────────
     teacher = None
+    crrcd_module: CRRCDLoss | None = None
     if cfg.distill_enabled:
         teacher = FrozenRFDETRTeacher(cfg).to(device).eval()
         model.register_teacher_queries(
@@ -114,6 +115,26 @@ def train(cfg: Config):
             f"general_enabled={cfg.distill_general_enabled}, "
             f"Q_general={cfg.distill_num_general_queries}"
         )
+
+        # ── CRRCD relational distillation (optional) ─────────────
+        if cfg.crrcd_enabled:
+            crrcd_module = CRRCDLoss(
+                hidden_dim=int(teacher.hidden_dim),
+                relation_dim=int(cfg.crrcd_relation_dim),
+                frm_hidden_dim=int(cfg.crrcd_hidden_dim),
+                num_fg=int(cfg.crrcd_num_fg),
+                num_bg=int(cfg.crrcd_num_bg),
+                num_negatives=int(cfg.crrcd_num_negatives),
+                temperature=float(cfg.crrcd_temperature),
+            ).to(device)
+            # Attach to the student so its params are captured by
+            # ``model.get_param_groups()`` and saved with the checkpoint.
+            model.crrcd = crrcd_module
+            print(
+                f"[CRRCD] Enabled — K_fg={cfg.crrcd_num_fg}, "
+                f"K_bg={cfg.crrcd_num_bg}, n_neg={cfg.crrcd_num_negatives}, "
+                f"τ={cfg.crrcd_temperature}, β={cfg.crrcd_loss_weight}"
+            )
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total  = sum(p.numel() for p in model.parameters())
@@ -218,12 +239,30 @@ def train(cfg: Config):
                             "refpoints": teacher_out_spec["decoder_refpoints"],
                         },
                     )
+                    # Capture the student's last-layer decoder hidden state
+                    # *immediately* after the Branch-2 forward, before any
+                    # subsequent forward overwrites it.
+                    student_hs_spec = model._captured_decoder_hs
                     distill_spec = distillation_loss(
                         student_kd_spec, teacher_out_spec, cfg,
                     )
                     loss = loss + cfg.distill_loss_weight * distill_spec["loss_distill"]
                     for k, v in distill_spec.items():
                         loss_dict[f"spec/{k}"] = v.detach()
+
+                    # ── CRRCD relational contrastive distillation ───
+                    if (
+                        crrcd_module is not None
+                        and student_hs_spec is not None
+                        and "decoder_hs" in teacher_out_spec
+                    ):
+                        loss_rcd = crrcd_module(
+                            teacher_hs=teacher_out_spec["decoder_hs"],
+                            student_hs=student_hs_spec,
+                            weights=teacher_out_spec["foreground_weight"],
+                        )
+                        loss = loss + cfg.crrcd_loss_weight * loss_rcd
+                        loss_dict["spec/loss_crrcd"] = loss_rcd.detach()
 
                 # ── Branch 3 (KD-DETR general sampling) ───────────
                 if cfg.distill_enabled and cfg.distill_general_enabled:
@@ -388,6 +427,15 @@ def parse_args():
                    help="Disable KD-DETR general sampling branch.")
     p.add_argument("--num-general-queries", type=int, default=None)
     p.add_argument("--distill-teacher-ckpt", type=str, default=None)
+    p.add_argument("--crrcd", action="store_true",
+                   help="Enable CRRCD relational contrastive distillation "
+                        "(requires --distill).")
+    p.add_argument("--crrcd-weight", type=float, default=None,
+                   help="β coefficient for the CRRCD loss term.")
+    p.add_argument("--crrcd-num-fg", type=int, default=None)
+    p.add_argument("--crrcd-num-bg", type=int, default=None)
+    p.add_argument("--crrcd-num-negatives", type=int, default=None)
+    p.add_argument("--crrcd-temperature", type=float, default=None)
     return p.parse_args()
 
 
@@ -417,5 +465,17 @@ if __name__ == "__main__":
         cfg_kwargs["distill_num_general_queries"] = int(args.num_general_queries)
     if args.distill_teacher_ckpt is not None:
         cfg_kwargs["distill_teacher_ckpt"] = args.distill_teacher_ckpt
+    if args.crrcd:
+        cfg_kwargs["crrcd_enabled"] = True
+    if args.crrcd_weight is not None:
+        cfg_kwargs["crrcd_loss_weight"] = float(args.crrcd_weight)
+    if args.crrcd_num_fg is not None:
+        cfg_kwargs["crrcd_num_fg"] = int(args.crrcd_num_fg)
+    if args.crrcd_num_bg is not None:
+        cfg_kwargs["crrcd_num_bg"] = int(args.crrcd_num_bg)
+    if args.crrcd_num_negatives is not None:
+        cfg_kwargs["crrcd_num_negatives"] = int(args.crrcd_num_negatives)
+    if args.crrcd_temperature is not None:
+        cfg_kwargs["crrcd_temperature"] = float(args.crrcd_temperature)
     cfg = Config(**cfg_kwargs)
     train(cfg)
