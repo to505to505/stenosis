@@ -21,6 +21,7 @@ from rfdetr.models.lwdetr import build_model_from_config, build_criterion_from_c
 from rfdetr.utilities.tensors import NestedTensor, nested_tensor_from_tensor_list
 
 from .config import Config
+from .cpc_loss import SimpleCPCLoss
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -225,6 +226,16 @@ class TemporalRFDETR(nn.Module):
             )
             for _ in range(n_levels)
         ])
+        # ── CPC temporal regulariser (optional) ─────────────────────
+        # Only computed on the first backbone level (P4 for RF-DETR Small),
+        # whose channel count matches ``cfg.hidden_dim``.
+        if getattr(cfg, "cpc_enabled", False):
+            self.cpc_loss = SimpleCPCLoss(
+                hidden_dim=cfg.hidden_dim,
+                offsets=tuple(cfg.cpc_offsets),
+            )
+        else:
+            self.cpc_loss = None
         # ── KD-DETR specific-sampling state ─────────────────────────
         # Filled in by ``register_teacher_queries`` once a teacher is built.
         self._has_teacher_queries: bool = False
@@ -390,6 +401,8 @@ class TemporalRFDETR(nn.Module):
         fused_srcs = []
         fused_masks = []
         fused_poss = []
+        cpc_raw_l0: torch.Tensor | None = None
+        cpc_fused_l0: torch.Tensor | None = None
 
         for lvl_idx, feat in enumerate(features):
             src, mask = feat.decompose()  # (B*T, C, h, w), (B*T, h, w)
@@ -401,6 +414,11 @@ class TemporalRFDETR(nn.Module):
             # Apply temporal fusion → (B, C, h, w) enriched centre frame
             fused = self.temporal_fusions[lvl_idx](src_bt)
             fused_srcs.append(fused)
+
+            # Cache raw + fused features of the first level for CPC.
+            if lvl_idx == 0 and self.cpc_loss is not None and self.training:
+                cpc_raw_l0 = src_bt
+                cpc_fused_l0 = fused
 
             # Use centre frame's mask
             mask_bt = mask.reshape(B, T, h, w)
@@ -499,6 +517,22 @@ class TemporalRFDETR(nn.Module):
             else:
                 out = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
 
+        # ── 5. CPC temporal regulariser (training only) ─────────────
+        if (
+            self.cpc_loss is not None
+            and self.training
+            and query_mode == "student"
+            and cpc_fused_l0 is not None
+            and cpc_raw_l0 is not None
+        ):
+            if out is None:
+                out = {}
+            out["loss_cpc"] = self.cpc_loss(
+                fused_context=cpc_fused_l0,
+                raw_feats=cpc_raw_l0,
+                centre=self.centre,
+            )
+
         return out
 
     # ─────────────────────────────────────────────────────────────────
@@ -535,7 +569,7 @@ class TemporalRFDETR(nn.Module):
         for name, p in self.named_parameters():
             if not p.requires_grad:
                 continue
-            if "temporal_fusion" in name:
+            if "temporal_fusion" in name or "cpc_loss" in name:
                 temporal_params.append(p)
             elif "backbone" in name:
                 backbone_params.append(p)

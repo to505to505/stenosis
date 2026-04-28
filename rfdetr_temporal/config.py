@@ -128,3 +128,14 @@ class Config:
     crrcd_num_bg: int = 32               # K_bg — bottom-K teacher-confident slots
     crrcd_num_negatives: int = 16        # n   — negatives per anchor (0 = use all K_bg-1)
     crrcd_temperature: float = 0.1       # τ for sigmoid critic h(u,v)=σ(cos(u,v)/τ)
+
+    # ── CPC: Contrastive Predictive Coding (temporal regulariser) ─────
+    # Adds an InfoNCE loss between the fused centre-frame context c_t and
+    # the raw backbone features z_{t±1} of the neighbouring frames, with
+    # a trainable bilinear projection W_k that absorbs spatial displacement
+    # of the artery so the model is *not* forced to ``c_t == z_{t+1}``.
+    # Computed only on the first (P4) backbone level since it matches
+    # ``hidden_dim``; only active during training.
+    cpc_enabled: bool = False
+    cpc_weight: float = 1.0
+    cpc_offsets: tuple = (-1, 1)         # which neighbour frames to predict

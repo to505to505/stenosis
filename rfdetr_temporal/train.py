@@ -217,12 +217,20 @@ def train(cfg: Config):
             with autocast(enabled=cfg.amp):
                 # ── Branch 1: detection (student's own queries) ────
                 outputs = model(images, query_mode="student")
+                # Pull CPC out of the prediction dict so SetCriterion only
+                # sees standard keys (pred_logits/pred_boxes/aux/enc_outputs).
+                loss_cpc = outputs.pop("loss_cpc", None) if isinstance(outputs, dict) else None
                 loss_dict = criterion(outputs, centre_targets)
                 weight_dict = criterion.weight_dict
                 loss = sum(
                     loss_dict[k] * weight_dict[k]
                     for k in loss_dict if k in weight_dict
                 )
+
+                # ── CPC temporal regulariser (training only) ──────
+                if cfg.cpc_enabled and loss_cpc is not None:
+                    loss = loss + cfg.cpc_weight * loss_cpc
+                    loss_dict["loss_cpc"] = loss_cpc.detach()
 
                 # ── Branch 2 (KD-DETR specific sampling) ──────────
                 if cfg.distill_enabled:
@@ -436,6 +444,10 @@ def parse_args():
     p.add_argument("--crrcd-num-bg", type=int, default=None)
     p.add_argument("--crrcd-num-negatives", type=int, default=None)
     p.add_argument("--crrcd-temperature", type=float, default=None)
+    p.add_argument("--cpc", action="store_true",
+                   help="Enable Contrastive Predictive Coding temporal regulariser.")
+    p.add_argument("--cpc-weight", type=float, default=None,
+                   help="Weight for the CPC loss term (default: 1.0).")
     return p.parse_args()
 
 
@@ -477,5 +489,9 @@ if __name__ == "__main__":
         cfg_kwargs["crrcd_num_negatives"] = int(args.crrcd_num_negatives)
     if args.crrcd_temperature is not None:
         cfg_kwargs["crrcd_temperature"] = float(args.crrcd_temperature)
+    if args.cpc:
+        cfg_kwargs["cpc_enabled"] = True
+    if args.cpc_weight is not None:
+        cfg_kwargs["cpc_weight"] = float(args.cpc_weight)
     cfg = Config(**cfg_kwargs)
     train(cfg)
