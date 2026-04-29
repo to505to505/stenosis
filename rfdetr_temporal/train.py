@@ -31,6 +31,7 @@ from .dataset import get_dataloader
 from .model import TemporalRFDETR, _build_criterion
 from .evaluate import evaluate
 from .distill import FrozenRFDETRTeacher, distillation_loss, CRRCDLoss
+from .consistency_loss import temporal_consistency_loss
 
 
 def write_best_txt(run_dir: Path, best_metrics: dict, best_epoch: int, cfg: Config):
@@ -91,8 +92,11 @@ def train(cfg: Config):
 
     # ── data ────────────────────────────────────────────────────────
     use_teacher_frame = bool(cfg.distill_enabled)
+    use_paired = bool(cfg.consistency_enabled)
     train_loader = get_dataloader(
-        "train", cfg, shuffle=True, with_teacher_frame=use_teacher_frame,
+        "train", cfg, shuffle=True,
+        with_teacher_frame=use_teacher_frame,
+        with_paired_window=use_paired,
     )
     val_loader   = get_dataloader("valid", cfg, shuffle=False)
 
@@ -189,8 +193,20 @@ def train(cfg: Config):
         t0 = time.time()
 
         for batch_idx, batch in enumerate(train_loader):
-            # images: (B, T, 3, H, W)
-            if use_teacher_frame:
+            # Unpack batch — paired-window mode has two windows per sample.
+            images_b = None
+            targets_list_b = None
+            if use_paired:
+                if use_teacher_frame:
+                    (images, targets_list, images_b, targets_list_b,
+                     teacher_centre, _fnames) = batch
+                    teacher_centre = teacher_centre.to(device, non_blocking=True)
+                else:
+                    (images, targets_list, images_b, targets_list_b,
+                     _fnames) = batch
+                    teacher_centre = None
+                images_b = images_b.to(device, non_blocking=True)
+            elif use_teacher_frame:
                 images, targets_list, teacher_centre, _fnames = batch
                 teacher_centre = teacher_centre.to(device, non_blocking=True)
             else:
@@ -200,16 +216,24 @@ def train(cfg: Config):
 
             # Centre-frame targets for loss computation
             centre = cfg.T // 2
-            centre_targets = []
-            for sample_targets in targets_list:
-                t = sample_targets[centre]
-                centre_targets.append({
-                    "boxes": t["boxes"].to(device),
-                    "labels": t["labels"].to(device),
-                    "orig_size": torch.tensor(
-                        [cfg.img_size, cfg.img_size], device=device
-                    ),
-                })
+
+            def _build_centre_targets(tl):
+                out = []
+                for sample_targets in tl:
+                    t = sample_targets[centre]
+                    out.append({
+                        "boxes": t["boxes"].to(device),
+                        "labels": t["labels"].to(device),
+                        "orig_size": torch.tensor(
+                            [cfg.img_size, cfg.img_size], device=device
+                        ),
+                    })
+                return out
+
+            centre_targets = _build_centre_targets(targets_list)
+            centre_targets_b = (
+                _build_centre_targets(targets_list_b) if use_paired else None
+            )
 
             # Warmup
             warmup_lr(optimizer, global_step, cfg.warmup_iters, base_lrs)
@@ -302,6 +326,49 @@ def train(cfg: Config):
                     for k, v in distill_gen.items():
                         loss_dict[f"gen/{k}"] = v.detach()
 
+                # ── Sliding-Window Temporal Consistency ──────────
+                # Window B: standard detection loss on its own centre frame
+                # (no KD branches — KD operates on window A only).
+                # Then a third forward of A querying centre+1 produces
+                # predictions for the same physical frame as B's centre,
+                # which we Hungarian-match against B's centre predictions.
+                if cfg.consistency_enabled and images_b is not None:
+                    outputs_b = model(images_b, query_mode="student")
+                    loss_cpc_b = (
+                        outputs_b.pop("loss_cpc", None)
+                        if isinstance(outputs_b, dict) else None
+                    )
+                    loss_dict_b = criterion(outputs_b, centre_targets_b)
+                    loss_b = sum(
+                        loss_dict_b[k] * weight_dict[k]
+                        for k in loss_dict_b if k in weight_dict
+                    )
+                    loss = loss + loss_b
+                    for k, v in loss_dict_b.items():
+                        loss_dict[f"B/{k}"] = v.detach()
+                    if cfg.cpc_enabled and loss_cpc_b is not None:
+                        loss = loss + cfg.cpc_weight * loss_cpc_b
+                        loss_dict["B/loss_cpc"] = loss_cpc_b.detach()
+
+                    # Third forward: A queried at centre+1 → predicts B's
+                    # centre frame. Hungarian-match against outputs_b.
+                    outputs_a_at_next = model(
+                        images, query_mode="student",
+                        predict_frame=centre + 1,
+                    )
+                    # Strip auxiliary keys CPC may have left behind (CPC
+                    # is gated off when predict_frame != centre, but be safe).
+                    if isinstance(outputs_a_at_next, dict):
+                        outputs_a_at_next.pop("loss_cpc", None)
+                    loss_cons = temporal_consistency_loss(
+                        outputs_a_at_next, outputs_b,
+                        top_k=int(cfg.consistency_top_k),
+                        kl_weight=float(cfg.consistency_kl_weight),
+                        box_l1_weight=float(cfg.consistency_l1_weight),
+                    )
+                    loss = loss + cfg.consistency_weight * loss_cons
+                    loss_dict["loss_cons"] = loss_cons.detach()
+
                 loss_scaled = loss / cfg.grad_accum_steps
 
             scaler.scale(loss_scaled).backward()
@@ -379,7 +446,13 @@ def train(cfg: Config):
                     },
                     run_dir / "best.pth",
                 )
+                write_best_txt(run_dir, best_metrics, best_epoch, cfg)
                 print(f"  ★ New best mAP50={best_map50:.4f}")
+
+            # Incremental save after every validated epoch
+            with open(run_dir / "history.json", "w") as _f:
+                json.dump(history, _f, indent=2)
+            save_train_csv(run_dir, history)
 
         # Save latest
         torch.save(
@@ -387,14 +460,10 @@ def train(cfg: Config):
             run_dir / "last.pth",
         )
 
-    # ── save history ────────────────────────────────────────────────
+    # ── final save (ensures files are up-to-date after last epoch) ──
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
-
-    # ── save train.csv ──────────────────────────────────────────────
     save_train_csv(run_dir, history)
-
-    # ── save best.txt ───────────────────────────────────────────────
     write_best_txt(run_dir, best_metrics, best_epoch, cfg)
     print(f"[INFO] Best metrics saved to {run_dir / 'best.txt'}")
 
@@ -448,6 +517,14 @@ def parse_args():
                    help="Enable Contrastive Predictive Coding temporal regulariser.")
     p.add_argument("--cpc-weight", type=float, default=None,
                    help="Weight for the CPC loss term (default: 1.0).")
+    p.add_argument("--consistency", action="store_true",
+                   help="Enable Sliding-Window Temporal Consistency loss "
+                        "(uses paired-window dataloader; adds ~2× student "
+                        "forwards per step).")
+    p.add_argument("--consistency-weight", type=float, default=None,
+                   help="Weight for the consistency loss (default: 0.5).")
+    p.add_argument("--consistency-top-k", type=int, default=None,
+                   help="Top-K predictions matched per side (default: 20).")
     return p.parse_args()
 
 
@@ -493,5 +570,11 @@ if __name__ == "__main__":
         cfg_kwargs["cpc_enabled"] = True
     if args.cpc_weight is not None:
         cfg_kwargs["cpc_weight"] = float(args.cpc_weight)
+    if args.consistency:
+        cfg_kwargs["consistency_enabled"] = True
+    if args.consistency_weight is not None:
+        cfg_kwargs["consistency_weight"] = float(args.consistency_weight)
+    if args.consistency_top_k is not None:
+        cfg_kwargs["consistency_top_k"] = int(args.consistency_top_k)
     cfg = Config(**cfg_kwargs)
     train(cfg)

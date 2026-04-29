@@ -139,3 +139,18 @@ class Config:
     cpc_enabled: bool = False
     cpc_weight: float = 1.0
     cpc_offsets: tuple = (-1, 1)         # which neighbour frames to predict
+
+    # ── Sliding-Window Temporal Consistency ─────────────────────────
+    # Pair each window A=[f_{t-2}..f_{t+2}] (centre f_t) with the next
+    # overlapping window B=[f_{t-1}..f_{t+3}] (centre f_{t+1}). Both A
+    # and B contribute the standard detection loss on their centres.
+    # Additionally, A is queried with predict_frame=centre+1 so that it
+    # produces a prediction set for the *same physical frame* as B's
+    # centre. The two prediction sets are Hungarian-matched (top-K) and
+    # penalised for box-coordinate (L1) and class-probability (sym-KL)
+    # disagreement. Both sides receive gradients.
+    consistency_enabled: bool = False
+    consistency_weight: float = 0.5
+    consistency_top_k: int = 20
+    consistency_kl_weight: float = 1.0
+    consistency_l1_weight: float = 5.0

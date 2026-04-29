@@ -1,0 +1,148 @@
+{
+  "baseline": {
+    "run": "temporal_small_t5_k0_distill_aligned_crrcd",
+    "cfg": {
+      "T": 5,
+      "img_size": 512
+    },
+    "datasets": [
+      {
+        "dataset": "cadica_50plus_new",
+        "n_videos": 160,
+        "n_centre_frames": 1614,
+        "macro_per_video": {
+          "AP30": 0.5291800905374077,
+          "AP50": 0.2755627602905505,
+          "AP75": 0.019908439755813828,
+          "AP5095": 0.079886592205037,
+          "F1": 0.3296756606785416
+        },
+        "micro_pooled": {
+          "AP30": 0.40437685003365165,
+          "AP50": 0.12864368297963671,
+          "AP75": 0.001244493892958868,
+          "AP5095": 0.02845313668412113,
+          "F1": 0.25764546684709067,
+          "P": 0.3373493975903614,
+          "R": 0.2084063047285464,
+          "thr": 0.41000000000000003
+        },
+        "consistency_at_micro_thr": {
+          "threshold": 0.41000000000000003,
+          "n_videos_used": 137,
+          "n_consecutive_pairs": 1454,
+          "n_pairs_with_match": 869,
+          "flicker_rate": 0.16886875941588061,
+          "mean_count_diff": 0.2232435340528943,
+          "matched_iou": 0.6201323312267973,
+          "matched_disp_norm": 0.010272247218391827
+        }
+      },
+      {
+        "dataset": "dataset2_split_test",
+        "n_videos": 31,
+        "n_centre_frames": 1128,
+        "macro_per_video": {
+          "AP30": 0.5664313198336046,
+          "AP50": 0.32583000445028143,
+          "AP75": 0.02376255752385368,
+          "AP5095": 0.09569020533782666,
+          "F1": 0.385827817732955
+        },
+        "micro_pooled": {
+          "AP30": 0.5526511213000603,
+          "AP50": 0.21246526487303957,
+          "AP75": 0.010109534835434756,
+          "AP5095": 0.05281613357063889,
+          "F1": 0.35235507246376807,
+          "P": 0.36018518518518516,
+          "R": 0.3448581560283688,
+          "thr": 0.43
+        },
+        "consistency_at_micro_thr": {
+          "threshold": 0.43,
+          "n_videos_used": 31,
+          "n_consecutive_pairs": 1097,
+          "n_pairs_with_match": 875,
+          "flicker_rate": 0.09710262439423992,
+          "mean_count_diff": 0.15908115091054506,
+          "matched_iou": 0.6502737665016126,
+          "matched_disp_norm": 0.007597907256264699
+        }
+      }
+    ]
+  },
+  "cpc": {
+    "run": "temporal_small_t5_k0_distill_aligned_crrcd_cpc",
+    "cfg": {
+      "T": 5,
+      "img_size": 512
+    },
+    "datasets": [
+      {
+        "dataset": "cadica_50plus_new",
+        "n_videos": 160,
+        "n_centre_frames": 1614,
+        "macro_per_video": {
+          "AP30": 0.5171360025732161,
+          "AP50": 0.2642943068718779,
+          "AP75": 0.010976377472873514,
+          "AP5095": 0.06987431722426525,
+          "F1": 0.32213633907763867
+        },
+        "micro_pooled": {
+          "AP30": 0.38023681971902473,
+          "AP50": 0.11377245961744975,
+          "AP75": 0.0007590659025031082,
+          "AP5095": 0.02279811930482304,
+          "F1": 0.23810775295663603,
+          "P": 0.2978303747534517,
+          "R": 0.19833625218914186,
+          "thr": 0.33
+        },
+        "consistency_at_micro_thr": {
+          "threshold": 0.33,
+          "n_videos_used": 137,
+          "n_consecutive_pairs": 1454,
+          "n_pairs_with_match": 912,
+          "flicker_rate": 0.14061283616580234,
+          "mean_count_diff": 0.2178477390480951,
+          "matched_iou": 0.6198417453131772,
+          "matched_disp_norm": 0.010042329028697441
+        }
+      },
+      {
+        "dataset": "dataset2_split_test",
+        "n_videos": 31,
+        "n_centre_frames": 1128,
+        "macro_per_video": {
+          "AP30": 0.5602475784191298,
+          "AP50": 0.3225023873252688,
+          "AP75": 0.019707451224614567,
+          "AP5095": 0.08871440480660744,
+          "F1": 0.381410529876119
+        },
+        "micro_pooled": {
+          "AP30": 0.5550325003493762,
+          "AP50": 0.24132090933793598,
+          "AP75": 0.012194672548159475,
+          "AP5095": 0.06292598876601833,
+          "F1": 0.3513638465094776,
+          "P": 0.3671497584541063,
+          "R": 0.33687943262411346,
+          "thr": 0.38
+        },
+        "consistency_at_micro_thr": {
+          "threshold": 0.38,
+          "n_videos_used": 31,
+          "n_consecutive_pairs": 1097,
+          "n_pairs_with_match": 802,
+          "flicker_rate": 0.12880544941271505,
+          "mean_count_diff": 0.17931285440162756,
+          "matched_iou": 0.6521866907661201,
+          "matched_disp_norm": 0.007130733946367007
+        }
+      }
+    ]
+  }
+}

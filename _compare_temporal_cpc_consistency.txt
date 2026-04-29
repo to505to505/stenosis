@@ -1,0 +1,54 @@
+Temporal consistency comparison
+  baseline:  temporal_small_t5_k0_distill_aligned_crrcd
+  with CPC:  temporal_small_t5_k0_distill_aligned_crrcd_cpc
+
+Each metric is computed at the model's own best-F1 threshold on that dataset (so the model is judged at its own operating point). Lower is better for flicker_rate, mean_count_diff, matched_disp_norm; higher is better for matched_iou.
+
+================================================================================
+Dataset: cadica_50plus_new
+  videos=160  centre_frames=1614
+================================================================================
+
+Detection accuracy (micro-pooled, for context):
+  metric         baseline        cpc   Δ (cpc-base)
+  AP30             0.4044     0.3802        -0.0241
+  AP50             0.1286     0.1138        -0.0149
+  AP75             0.0012     0.0008        -0.0005
+  AP5095           0.0285     0.0228        -0.0057
+  F1               0.2576     0.2381        -0.0195
+  thr              0.4100     0.3300        -0.0800
+
+Consistency metrics:
+  metric                   baseline        cpc   Δ (cpc-base)    better?
+  flicker_rate               0.1689     0.1406        -0.0283      CPC ✓
+  mean_count_diff            0.2232     0.2178        -0.0054      CPC ✓
+  matched_iou                0.6201     0.6198        -0.0003       BASE
+  matched_disp_norm          0.0103     0.0100        -0.0002      CPC ✓
+  (used videos)                 137        137
+  (consec. pairs)              1454       1454
+  (pairs with match)            869        912
+
+================================================================================
+Dataset: dataset2_split_test
+  videos=31  centre_frames=1128
+================================================================================
+
+Detection accuracy (micro-pooled, for context):
+  metric         baseline        cpc   Δ (cpc-base)
+  AP30             0.5527     0.5550        +0.0024
+  AP50             0.2125     0.2413        +0.0289
+  AP75             0.0101     0.0122        +0.0021
+  AP5095           0.0528     0.0629        +0.0101
+  F1               0.3524     0.3514        -0.0010
+  thr              0.4300     0.3800        -0.0500
+
+Consistency metrics:
+  metric                   baseline        cpc   Δ (cpc-base)    better?
+  flicker_rate               0.0971     0.1288        +0.0317       BASE
+  mean_count_diff            0.1591     0.1793        +0.0202       BASE
+  matched_iou                0.6503     0.6522        +0.0019      CPC ✓
+  matched_disp_norm          0.0076     0.0071        -0.0005      CPC ✓
+  (used videos)                  31         31
+  (consec. pairs)              1097       1097
+  (pairs with match)            875        802
+

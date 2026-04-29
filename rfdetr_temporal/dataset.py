@@ -187,15 +187,40 @@ def build_photometric_augmentation() -> A.Compose:
 class TemporalStenosisDataset(Dataset):
     """Dataset yielding windows of T consecutive RGB frames + RF-DETR-format targets."""
 
-    def __init__(self, split: str, cfg: Config, with_teacher_frame: bool = False):
+    def __init__(
+        self,
+        split: str,
+        cfg: Config,
+        with_teacher_frame: bool = False,
+        with_paired_window: bool = False,
+    ):
         self.cfg = cfg
         self.split = split
         self.with_teacher_frame = with_teacher_frame
+        self.with_paired_window = with_paired_window
         self.img_dir = cfg.data_root / split / "images"
         self.lbl_dir = cfg.data_root / split / "labels"
 
         sequences = build_sequence_index(self.img_dir)
         self.windows = build_windows(sequences, cfg.T)
+
+        # Build paired-window index: (idx_A, idx_B) where window B = window A
+        # shifted by 1 frame within the same sequence. Skips short / padded
+        # sequences so both items always have a true neighbour.
+        self.paired_windows: List[Tuple[int, int]] = []
+        if with_paired_window:
+            cursor = 0
+            for _pid, _sid, paths in sequences:
+                n = len(paths)
+                if n == 0:
+                    continue
+                if n < cfg.T:
+                    cursor += 1                       # one padded window, no pair
+                    continue
+                nw = n - cfg.T + 1
+                for k in range(nw - 1):
+                    self.paired_windows.append((cursor + k, cursor + k + 1))
+                cursor += nw
 
         if split == "train":
             if with_teacher_frame:
@@ -223,9 +248,12 @@ class TemporalStenosisDataset(Dataset):
             f"[{split}] {len(sequences)} sequences, "
             f"{sum(len(s[2]) for s in sequences)} frames, "
             f"{len(self.windows)} windows of T={cfg.T}"
+            + (f", {len(self.paired_windows)} paired windows" if with_paired_window else "")
         )
 
     def __len__(self) -> int:
+        if self.with_paired_window:
+            return len(self.paired_windows)
         return len(self.windows)
 
     def _to_imagenet_tensor(self, img: np.ndarray) -> torch.Tensor:
@@ -234,56 +262,49 @@ class TemporalStenosisDataset(Dataset):
         t = torch.from_numpy(img_3ch)
         return (t - self.mean) / self.std
 
-    def __getitem__(self, idx: int):
-        paths = self.windows[idx]
+    def _load_window(
+        self, paths, saved_replay=None,
+    ) -> Tuple[torch.Tensor, list, object]:
+        """Load one window of T frames + targets, optionally re-using an
+        already-saved augmentation replay so multiple windows share the same
+        geometric transform (used by the paired-window mode for the overlap).
+
+        Returns:
+            frames:  (T, 3, H, W) ImageNet-normalised tensor
+            targets: list of {"boxes", "labels"} dicts, one per frame
+            replay:  the augmentation replay used (for re-use on the next
+                     window or on the HR teacher frame)
+        """
         images = []
         targets = []
-        saved_replay = None
-        teacher_tensor = None
-        centre_path = paths[self.centre]
-
-        # Read centre frame at original resolution once (used for the HR
-        # teacher input below — only when with_teacher_frame is True).
-        teacher_orig = None
-        if self.with_teacher_frame:
-            teacher_orig = cv2.imread(str(centre_path), cv2.IMREAD_GRAYSCALE)
-            if teacher_orig is None:
-                raise FileNotFoundError(f"Cannot read {centre_path}")
-            if teacher_orig.shape[:2] != (self.teacher_size, self.teacher_size):
-                teacher_orig = cv2.resize(
-                    teacher_orig, (self.teacher_size, self.teacher_size),
-                    interpolation=cv2.INTER_AREA,
-                )
-
         for frame_i, img_path in enumerate(paths):
-            # Load grayscale and replicate to 3 channels
             img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
             if img is None:
                 raise FileNotFoundError(f"Cannot read {img_path}")
             orig_h, orig_w = img.shape[:2]
-
-            # Resize (INTER_AREA – same as standard RF-DETR preprocessing)
             if orig_h != self.cfg.img_size or orig_w != self.cfg.img_size:
-                img = cv2.resize(img, (self.cfg.img_size, self.cfg.img_size),
-                                 interpolation=cv2.INTER_AREA)
+                img = cv2.resize(
+                    img, (self.cfg.img_size, self.cfg.img_size),
+                    interpolation=cv2.INTER_AREA,
+                )
 
-            # Load YOLO labels and convert to pascal_voc for augmentation
             lbl_path = self.lbl_dir / (img_path.stem + ".txt")
             yolo_labels = load_yolo_labels(lbl_path)
-            bboxes, class_ids = yolo_to_pascal(yolo_labels, self.cfg.img_size, self.cfg.img_size)
+            bboxes, class_ids = yolo_to_pascal(
+                yolo_labels, self.cfg.img_size, self.cfg.img_size,
+            )
             bboxes = bboxes.tolist()
             class_ids = class_ids.tolist()
 
             if self.geom_aug is not None:
-                # Split-pipeline path (distillation): geom is replayed across
-                # frames so the saved replay can also be applied to the HR
-                # teacher frame; photometric is per-frame, student-only.
-                if frame_i == 0:
-                    result = self.geom_aug(image=img, bboxes=bboxes, class_ids=class_ids)
+                if saved_replay is None:
+                    result = self.geom_aug(
+                        image=img, bboxes=bboxes, class_ids=class_ids,
+                    )
                     saved_replay = result["replay"]
                 else:
                     result = ReplayCompose.replay(
-                        saved_replay, image=img, bboxes=bboxes, class_ids=class_ids
+                        saved_replay, image=img, bboxes=bboxes, class_ids=class_ids,
                     )
                 img = result["image"]
                 bboxes = result["bboxes"]
@@ -291,13 +312,14 @@ class TemporalStenosisDataset(Dataset):
                 if self.photo_aug is not None:
                     img = self.photo_aug(image=img)["image"]
             elif self.augment is not None:
-                # Legacy single-pipeline path.
-                if frame_i == 0:
-                    result = self.augment(image=img, bboxes=bboxes, class_ids=class_ids)
+                if saved_replay is None:
+                    result = self.augment(
+                        image=img, bboxes=bboxes, class_ids=class_ids,
+                    )
                     saved_replay = result["replay"]
                 else:
                     result = ReplayCompose.replay(
-                        saved_replay, image=img, bboxes=bboxes, class_ids=class_ids
+                        saved_replay, image=img, bboxes=bboxes, class_ids=class_ids,
                     )
                 img = result["image"]
                 bboxes = result["bboxes"]
@@ -305,45 +327,74 @@ class TemporalStenosisDataset(Dataset):
 
             images.append(self._to_imagenet_tensor(img))
 
-            # Convert boxes back to normalised cxcywh for RF-DETR loss
             if len(bboxes) > 0:
                 boxes_np = np.array(bboxes, dtype=np.float32)
-                boxes_cxcywh = pascal_to_cxcywh_norm(boxes_np, self.cfg.img_size, self.cfg.img_size)
+                boxes_cxcywh = pascal_to_cxcywh_norm(
+                    boxes_np, self.cfg.img_size, self.cfg.img_size,
+                )
                 boxes = torch.from_numpy(boxes_cxcywh)
             else:
                 boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros(len(boxes), dtype=torch.int64)
             targets.append({"boxes": boxes, "labels": labels})
 
-        # Build the HR teacher centre frame using the saved geometric replay.
-        if self.with_teacher_frame:
-            assert teacher_orig is not None
-            if saved_replay is not None:
-                # Geometric ops here (HFlip/VFlip/Rotate/Affine with relative
-                # parameters) are scale-invariant, so replaying on a 704 frame
-                # produces the same anatomy transform as on the cfg.img_size
-                # student frame. Bbox coords are not used for the teacher; we
-                # pass an empty list to satisfy ReplayCompose.
-                result = ReplayCompose.replay(
-                    saved_replay, image=teacher_orig, bboxes=[], class_ids=[],
-                )
-                teacher_img = result["image"]
-            else:
-                teacher_img = teacher_orig
-            # Some albumentations ops resize the canvas during replay (e.g.,
-            # crop / resize-aware transforms). Force the teacher input back to
-            # the expected square HR resolution.
-            if teacher_img.shape[:2] != (self.teacher_size, self.teacher_size):
-                teacher_img = cv2.resize(
-                    teacher_img, (self.teacher_size, self.teacher_size),
-                    interpolation=cv2.INTER_AREA,
-                )
-            teacher_tensor = self._to_imagenet_tensor(teacher_img)
+        frames = torch.stack(images, dim=0)  # (T, 3, H, W)
+        return frames, targets, saved_replay
 
-        images = torch.stack(images, dim=0)  # (T, 3, H, W)
+    def _load_teacher_centre(self, centre_path: Path, saved_replay) -> torch.Tensor:
+        """Load + transform the HR teacher centre frame using the same
+        geometric replay as the student window."""
+        teacher_orig = cv2.imread(str(centre_path), cv2.IMREAD_GRAYSCALE)
+        if teacher_orig is None:
+            raise FileNotFoundError(f"Cannot read {centre_path}")
+        if teacher_orig.shape[:2] != (self.teacher_size, self.teacher_size):
+            teacher_orig = cv2.resize(
+                teacher_orig, (self.teacher_size, self.teacher_size),
+                interpolation=cv2.INTER_AREA,
+            )
+        if saved_replay is not None:
+            result = ReplayCompose.replay(
+                saved_replay, image=teacher_orig, bboxes=[], class_ids=[],
+            )
+            teacher_img = result["image"]
+        else:
+            teacher_img = teacher_orig
+        if teacher_img.shape[:2] != (self.teacher_size, self.teacher_size):
+            teacher_img = cv2.resize(
+                teacher_img, (self.teacher_size, self.teacher_size),
+                interpolation=cv2.INTER_AREA,
+            )
+        return self._to_imagenet_tensor(teacher_img)
+
+    def __getitem__(self, idx: int):
+        # ── Paired-window mode (sliding-window consistency) ─────────
+        if self.with_paired_window:
+            idx_a, idx_b = self.paired_windows[idx]
+            paths_a = self.windows[idx_a]
+            paths_b = self.windows[idx_b]
+            # Load A first (creates the replay), then re-use the replay for B
+            # so the overlapping frames share identical augmentation geometry.
+            frames_a, targets_a, replay = self._load_window(paths_a, saved_replay=None)
+            frames_b, targets_b, _ = self._load_window(paths_b, saved_replay=replay)
+            fnames = (
+                [p.name for p in paths_a],
+                [p.name for p in paths_b],
+            )
+            if self.with_teacher_frame:
+                teacher_a = self._load_teacher_centre(paths_a[self.centre], replay)
+                return (
+                    frames_a, targets_a, frames_b, targets_b,
+                    teacher_a, fnames,
+                )
+            return frames_a, targets_a, frames_b, targets_b, fnames
+
+        # ── Standard single-window mode ─────────────────────────────
+        paths = self.windows[idx]
+        frames, targets, replay = self._load_window(paths, saved_replay=None)
         if self.with_teacher_frame:
-            return images, targets, teacher_tensor, [p.name for p in paths]
-        return images, targets, [p.name for p in paths]
+            teacher_tensor = self._load_teacher_centre(paths[self.centre], replay)
+            return frames, targets, teacher_tensor, [p.name for p in paths]
+        return frames, targets, [p.name for p in paths]
 
 
 def collate_fn(batch):
@@ -363,16 +414,53 @@ def collate_fn_with_teacher(batch):
     return images, targets, teacher, filenames
 
 
+def collate_fn_paired(batch):
+    """Collate paired-window items (no teacher frame).
+    Returns: (images_a, targets_a, images_b, targets_b, fnames)
+    """
+    images_a = torch.stack([it[0] for it in batch], dim=0)
+    targets_a = [it[1] for it in batch]
+    images_b = torch.stack([it[2] for it in batch], dim=0)
+    targets_b = [it[3] for it in batch]
+    fnames = [it[4] for it in batch]
+    return images_a, targets_a, images_b, targets_b, fnames
+
+
+def collate_fn_paired_with_teacher(batch):
+    """Collate paired-window items WITH HR teacher centre frame for window A.
+    Returns: (images_a, targets_a, images_b, targets_b, teacher_a, fnames)
+    """
+    images_a = torch.stack([it[0] for it in batch], dim=0)
+    targets_a = [it[1] for it in batch]
+    images_b = torch.stack([it[2] for it in batch], dim=0)
+    targets_b = [it[3] for it in batch]
+    teacher_a = torch.stack([it[4] for it in batch], dim=0)
+    fnames = [it[5] for it in batch]
+    return images_a, targets_a, images_b, targets_b, teacher_a, fnames
+
+
 def get_dataloader(
-    split: str, cfg: Config, shuffle: bool = False, with_teacher_frame: bool = False,
+    split: str,
+    cfg: Config,
+    shuffle: bool = False,
+    with_teacher_frame: bool = False,
+    with_paired_window: bool = False,
 ) -> DataLoader:
-    ds = TemporalStenosisDataset(split, cfg, with_teacher_frame=with_teacher_frame)
+    ds = TemporalStenosisDataset(
+        split, cfg,
+        with_teacher_frame=with_teacher_frame,
+        with_paired_window=with_paired_window,
+    )
+    if with_paired_window:
+        coll = collate_fn_paired_with_teacher if with_teacher_frame else collate_fn_paired
+    else:
+        coll = collate_fn_with_teacher if with_teacher_frame else collate_fn
     return DataLoader(
         ds,
         batch_size=cfg.batch_size,
         shuffle=shuffle,
         num_workers=cfg.num_workers,
-        collate_fn=collate_fn_with_teacher if with_teacher_frame else collate_fn,
+        collate_fn=coll,
         pin_memory=True,
         drop_last=(split == "train"),
     )

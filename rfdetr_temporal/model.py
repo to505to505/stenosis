@@ -72,18 +72,23 @@ class TemporalFusion(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
 
-    def forward(self, feats: torch.Tensor) -> torch.Tensor:
+    def forward(self, feats: torch.Tensor, query_frame: int | None = None) -> torch.Tensor:
         """
         Args:
             feats: (B, T, C, H, W) – features from backbone for one level
+            query_frame: which frame to use as the Query frame (defaults to
+                centre). KV always spans all T frames so the chosen frame
+                still attends to its full temporal neighbourhood.
         Returns:
-            fused: (B, C, H, W) – temporally-enriched centre-frame features
+            fused: (B, C, H, W) – temporally-enriched ``query_frame`` features
         """
         B, T, C, H, W = feats.shape
         assert T == self.T, f"Expected T={self.T}, got {T}"
         K = self.K
         K2 = K * K
         HW = H * W
+        qf = self.centre if query_frame is None else int(query_frame)
+        assert 0 <= qf < T, f"query_frame={qf} out of range [0, {T})"
 
         # ── Build KV: local (K×K) neighbourhood for every (h, w) of every frame
         x = feats.reshape(B * T, C, H, W)
@@ -99,8 +104,8 @@ class TemporalFusion(nn.Module):
         pos_kv = (tp[:, None, :] + sp[None, :, :]).reshape(T * K2, C)
         kv = kv + pos_kv[None]                        # broadcast over (B*HW)
 
-        # ── Build Q: centre frame's centre-position feature (single token)
-        centre_feat = feats[:, self.centre]           # (B, C, H, W)
+        # ── Build Q: query-frame centre-position features (single token)
+        centre_feat = feats[:, qf]                    # (B, C, H, W)
         q = centre_feat.permute(0, 2, 3, 1).reshape(B * HW, 1, C)
 
         # ── Cross-attention: Q (len 1) attends to KV (len T*K²)
@@ -355,6 +360,7 @@ class TemporalRFDETR(nn.Module):
         query_mode: str = "student",
         general_queries: dict | None = None,
         decoder_inputs: dict | None = None,
+        predict_frame: int | None = None,
     ):
         """
         Args:
@@ -387,6 +393,13 @@ class TemporalRFDETR(nn.Module):
         """
         assert query_mode in ("student", "teacher", "general"), query_mode
         B, T, C, H, W = frames.shape
+        # Resolve which frame's slot the model should produce predictions for.
+        # Defaults to the natural centre; sliding-window consistency uses
+        # ``predict_frame = centre + 1`` to predict the *next* frame from
+        # the same window.
+        pf = self.centre if predict_frame is None else int(predict_frame)
+        assert 0 <= pf < self.T, f"predict_frame={pf} out of range [0, {self.T})"
+        is_centre_query = (pf == self.centre)
 
         # Reset the decoder hidden-state capture (used by CRRCD).
         self._captured_decoder_hs = None
@@ -411,23 +424,33 @@ class TemporalRFDETR(nn.Module):
             # Reshape to (B, T, C, h, w)
             src_bt = src.reshape(B, T, Cl, h, w)
 
-            # Apply temporal fusion → (B, C, h, w) enriched centre frame
-            fused = self.temporal_fusions[lvl_idx](src_bt)
+            # Apply temporal fusion → (B, C, h, w) enriched ``pf`` frame
+            fused = self.temporal_fusions[lvl_idx](src_bt, query_frame=pf)
             fused_srcs.append(fused)
 
             # Cache raw + fused features of the first level for CPC.
-            if lvl_idx == 0 and self.cpc_loss is not None and self.training:
+            # CPC always operates on the true centre frame, so we only run
+            # it when the prediction query is also the natural centre (and
+            # we cache the *centre* fused feature, computed separately if
+            # pf != centre — but in this codebase consistency uses pf!=centre
+            # in a separate forward, so simply skipping CPC there is safe).
+            if (
+                lvl_idx == 0
+                and self.cpc_loss is not None
+                and self.training
+                and is_centre_query
+            ):
                 cpc_raw_l0 = src_bt
                 cpc_fused_l0 = fused
 
-            # Use centre frame's mask
+            # Use ``pf`` frame's mask
             mask_bt = mask.reshape(B, T, h, w)
-            fused_masks.append(mask_bt[:, self.centre])
+            fused_masks.append(mask_bt[:, pf])
 
-            # Use centre frame's position embeddings
+            # Use ``pf`` frame's position embeddings
             pos = poss[lvl_idx]  # (B*T, C, h, w)
             pos_bt = pos.reshape(B, T, Cl, h, w)
-            fused_poss.append(pos_bt[:, self.centre])
+            fused_poss.append(pos_bt[:, pf])
 
         # ── 3. Resolve queries + run decoder ────────────────────────
         restore_fn = None
