@@ -93,6 +93,12 @@ def train(cfg: Config):
     # ── data ────────────────────────────────────────────────────────
     use_teacher_frame = bool(cfg.distill_enabled)
     use_paired = bool(cfg.consistency_enabled)
+    if use_paired:
+        centre = cfg.T // 2
+        assert centre + int(cfg.consistency_offset) < cfg.T, (
+            f"consistency_offset={cfg.consistency_offset} too large for T={cfg.T}: "
+            f"centre+offset must be < T (centre={centre})"
+        )
     train_loader = get_dataloader(
         "train", cfg, shuffle=True,
         with_teacher_frame=use_teacher_frame,
@@ -350,11 +356,12 @@ def train(cfg: Config):
                         loss = loss + cfg.cpc_weight * loss_cpc_b
                         loss_dict["B/loss_cpc"] = loss_cpc_b.detach()
 
-                    # Third forward: A queried at centre+1 → predicts B's
-                    # centre frame. Hungarian-match against outputs_b.
+                    # Third forward: A queried at centre+offset → predicts
+                    # B's centre frame. GT-anchored matching against
+                    # outputs_b via the criterion's HungarianMatcher.
                     outputs_a_at_next = model(
                         images, query_mode="student",
-                        predict_frame=centre + 1,
+                        predict_frame=centre + int(cfg.consistency_offset),
                     )
                     # Strip auxiliary keys CPC may have left behind (CPC
                     # is gated off when predict_frame != centre, but be safe).
@@ -362,7 +369,8 @@ def train(cfg: Config):
                         outputs_a_at_next.pop("loss_cpc", None)
                     loss_cons = temporal_consistency_loss(
                         outputs_a_at_next, outputs_b,
-                        top_k=int(cfg.consistency_top_k),
+                        targets=centre_targets_b,
+                        matcher=criterion.matcher,
                         kl_weight=float(cfg.consistency_kl_weight),
                         box_l1_weight=float(cfg.consistency_l1_weight),
                     )
@@ -524,7 +532,11 @@ def parse_args():
     p.add_argument("--consistency-weight", type=float, default=None,
                    help="Weight for the consistency loss (default: 0.5).")
     p.add_argument("--consistency-top-k", type=int, default=None,
-                   help="Top-K predictions matched per side (default: 20).")
+                   help="(deprecated, ignored — GT-anchored matching no longer "
+                        "uses top-K filtering).")
+    p.add_argument("--consistency-offset", type=int, default=None,
+                   help="Frame offset between paired windows (default: 1). "
+                        "Must satisfy centre + offset < T, e.g. T=5 → offset∈{1,2}.")
     return p.parse_args()
 
 
@@ -576,5 +588,7 @@ if __name__ == "__main__":
         cfg_kwargs["consistency_weight"] = float(args.consistency_weight)
     if args.consistency_top_k is not None:
         cfg_kwargs["consistency_top_k"] = int(args.consistency_top_k)
+    if args.consistency_offset is not None:
+        cfg_kwargs["consistency_offset"] = int(args.consistency_offset)
     cfg = Config(**cfg_kwargs)
     train(cfg)

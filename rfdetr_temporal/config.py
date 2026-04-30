@@ -154,3 +154,7 @@ class Config:
     consistency_top_k: int = 20
     consistency_kl_weight: float = 1.0
     consistency_l1_weight: float = 5.0
+    # Frame offset between paired windows. Window B is window A shifted by
+    # this many frames. The third forward queries A at predict_frame =
+    # centre + offset so both branches predict the SAME physical frame.
+    consistency_offset: int = 1

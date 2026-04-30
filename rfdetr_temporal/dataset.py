@@ -205,10 +205,13 @@ class TemporalStenosisDataset(Dataset):
         self.windows = build_windows(sequences, cfg.T)
 
         # Build paired-window index: (idx_A, idx_B) where window B = window A
-        # shifted by 1 frame within the same sequence. Skips short / padded
-        # sequences so both items always have a true neighbour.
+        # shifted by ``consistency_offset`` frames within the same sequence.
+        # Skips short / padded sequences so both items always have a true
+        # neighbour.
         self.paired_windows: List[Tuple[int, int]] = []
         if with_paired_window:
+            offset = int(getattr(cfg, "consistency_offset", 1))
+            assert offset >= 1, f"consistency_offset must be >=1, got {offset}"
             cursor = 0
             for _pid, _sid, paths in sequences:
                 n = len(paths)
@@ -218,8 +221,8 @@ class TemporalStenosisDataset(Dataset):
                     cursor += 1                       # one padded window, no pair
                     continue
                 nw = n - cfg.T + 1
-                for k in range(nw - 1):
-                    self.paired_windows.append((cursor + k, cursor + k + 1))
+                for k in range(nw - offset):
+                    self.paired_windows.append((cursor + k, cursor + k + offset))
                 cursor += nw
 
         if split == "train":
