@@ -537,6 +537,25 @@ def parse_args():
     p.add_argument("--consistency-offset", type=int, default=None,
                    help="Frame offset between paired windows (default: 1). "
                         "Must satisfy centre + offset < T, e.g. T=5 → offset∈{1,2}.")
+    p.add_argument("--temporal-dropout", action="store_true",
+                   help="Enable asymmetric Temporal Dropout: with prob "
+                        "`--temporal-dropout-prob`, replace centre frame "
+                        "(and optionally neighbours) with extreme noise to "
+                        "force reliance on TSM/temporal-fusion channels.")
+    p.add_argument("--temporal-dropout-prob", type=float, default=None,
+                   help="P(apply dropout per training window). Default: 0.25.")
+    p.add_argument("--temporal-dropout-centre-p", type=float, default=None,
+                   help="Conditional P(mask centre | dropout activated). "
+                        "Default: 1.0.")
+    p.add_argument("--temporal-dropout-neighbour-p", type=float, default=None,
+                   help="Conditional P(mask each neighbour | dropout activated). "
+                        "Default: 0.3.")
+    p.add_argument("--temporal-dropout-radius", type=int, default=None,
+                   help="Neighbour radius around centre considered for masking. "
+                        "Default: 1.")
+    p.add_argument("--temporal-dropout-noise-std", type=float, default=None,
+                   help="Std of Gaussian noise (in normalised space) used as "
+                        "the mask. Default: 1.0.")
     return p.parse_args()
 
 
@@ -590,5 +609,17 @@ if __name__ == "__main__":
         cfg_kwargs["consistency_top_k"] = int(args.consistency_top_k)
     if args.consistency_offset is not None:
         cfg_kwargs["consistency_offset"] = int(args.consistency_offset)
+    if args.temporal_dropout:
+        cfg_kwargs["temporal_dropout_enabled"] = True
+    if args.temporal_dropout_prob is not None:
+        cfg_kwargs["temporal_dropout_prob"] = float(args.temporal_dropout_prob)
+    if args.temporal_dropout_centre_p is not None:
+        cfg_kwargs["temporal_dropout_centre_p"] = float(args.temporal_dropout_centre_p)
+    if args.temporal_dropout_neighbour_p is not None:
+        cfg_kwargs["temporal_dropout_neighbour_p"] = float(args.temporal_dropout_neighbour_p)
+    if args.temporal_dropout_radius is not None:
+        cfg_kwargs["temporal_dropout_radius"] = int(args.temporal_dropout_radius)
+    if args.temporal_dropout_noise_std is not None:
+        cfg_kwargs["temporal_dropout_noise_std"] = float(args.temporal_dropout_noise_std)
     cfg = Config(**cfg_kwargs)
     train(cfg)

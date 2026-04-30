@@ -369,6 +369,46 @@ class TemporalStenosisDataset(Dataset):
             )
         return self._to_imagenet_tensor(teacher_img)
 
+    def _apply_temporal_dropout(self, frames: torch.Tensor) -> torch.Tensor:
+        """Replace selected frames with extreme Gaussian noise (in normalised
+        space). Train-only, asymmetric: centre is the primary target, with
+        an independent chance to also mask each neighbour within ±radius.
+
+        Args:
+            frames: (T, 3, H, W) ImageNet-normalised tensor.
+        Returns:
+            (T, 3, H, W) with masked frames replaced in-place.
+        """
+        cfg = self.cfg
+        if not getattr(cfg, "temporal_dropout_enabled", False):
+            return frames
+        if self.split != "train":
+            return frames
+        if np.random.rand() >= float(cfg.temporal_dropout_prob):
+            return frames
+
+        T = frames.shape[0]
+        centre = T // 2
+        masked = []
+        if np.random.rand() < float(cfg.temporal_dropout_centre_p):
+            masked.append(centre)
+
+        radius = int(cfg.temporal_dropout_radius)
+        p_n = float(cfg.temporal_dropout_neighbour_p)
+        if radius > 0 and p_n > 0.0:
+            for delta in range(1, radius + 1):
+                for cand in (centre - delta, centre + delta):
+                    if 0 <= cand < T and np.random.rand() < p_n:
+                        masked.append(cand)
+
+        if not masked:
+            return frames
+
+        std = float(cfg.temporal_dropout_noise_std)
+        for t_idx in masked:
+            frames[t_idx] = torch.randn_like(frames[t_idx]) * std
+        return frames
+
     def __getitem__(self, idx: int):
         # ── Paired-window mode (sliding-window consistency) ─────────
         if self.with_paired_window:
@@ -379,6 +419,8 @@ class TemporalStenosisDataset(Dataset):
             # so the overlapping frames share identical augmentation geometry.
             frames_a, targets_a, replay = self._load_window(paths_a, saved_replay=None)
             frames_b, targets_b, _ = self._load_window(paths_b, saved_replay=replay)
+            frames_a = self._apply_temporal_dropout(frames_a)
+            frames_b = self._apply_temporal_dropout(frames_b)
             fnames = (
                 [p.name for p in paths_a],
                 [p.name for p in paths_b],
@@ -394,6 +436,7 @@ class TemporalStenosisDataset(Dataset):
         # ── Standard single-window mode ─────────────────────────────
         paths = self.windows[idx]
         frames, targets, replay = self._load_window(paths, saved_replay=None)
+        frames = self._apply_temporal_dropout(frames)
         if self.with_teacher_frame:
             teacher_tensor = self._load_teacher_centre(paths[self.centre], replay)
             return frames, targets, teacher_tensor, [p.name for p in paths]

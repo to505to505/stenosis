@@ -158,3 +158,18 @@ class Config:
     # this many frames. The third forward queries A at predict_frame =
     # centre + offset so both branches predict the SAME physical frame.
     consistency_offset: int = 1
+
+    # ── Temporal Dropout (asymmetric frame masking) ───────────────────
+    # During training, with probability ``temporal_dropout_prob`` per window,
+    # replace selected frames with extreme noise. The centre frame is masked
+    # (when activated) with probability ``temporal_dropout_centre_p``; each
+    # neighbouring frame within ±radius of the centre is independently masked
+    # with probability ``temporal_dropout_neighbour_p``. Forces the model to
+    # rely on TSM/temporal-fusion channels (historical context) to compensate
+    # for the missing information.
+    temporal_dropout_enabled: bool = False
+    temporal_dropout_prob: float = 0.25
+    temporal_dropout_centre_p: float = 1.0
+    temporal_dropout_neighbour_p: float = 0.3
+    temporal_dropout_radius: int = 1
+    temporal_dropout_noise_std: float = 1.0   # std in ImageNet-normalised space
