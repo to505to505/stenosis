@@ -1,0 +1,560 @@
+"""Video RF-DETR model.
+
+Pipeline (Phases 2–5 of the spec):
+
+  1. Backbone + transformer encoder process every frame **independently**
+     by reshaping ``(B, T, 3, H, W) → (B*T, 3, H, W)``. No
+     ``F.unfold`` / pixel-level temporal mixing is performed before the
+     decoder.
+
+  2. The standard RF-DETR decoder produces a *first-pass* set of
+     predictions for every frame: ``hs[L, B*T, Q, D]``,
+     ``ref_unsigmoid[B*T, Q, 4]``.
+
+  3. STFS (``stfs.track_queries`` + ``stfs.inject_features``) chains
+     confident slots into tracks across the T frames and overwrites
+     Hypothesis-False-Negative slot embeddings + reference points with
+     the strongest in-track frame's counterparts.
+
+  4. A *refinement* deformable decoder layer (warm-init deepcopy of the
+     last RF-DETR decoder layer) re-runs cross-attention over the
+     per-frame memory using the enriched queries, producing the final
+     ``pred_logits[B,T,Q,K]`` / ``pred_boxes[B,T,Q,4]``.
+
+The KD-DETR ``query_mode="teacher"`` / ``"general"`` branches reuse the
+existing slot-injection / decoder-output capture hooks for per-frame
+CRRCD distillation; STFS + refinement are skipped in those branches.
+"""
+
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import torch
+import torch.nn as nn
+
+from rfdetr.config import RFDETRSmallConfig, TrainConfig
+from rfdetr.models.weights import load_pretrain_weights
+from rfdetr.models.lwdetr import build_model_from_config, build_criterion_from_config
+from rfdetr.models.transformer import gen_sineembed_for_position
+from rfdetr.utilities.tensors import nested_tensor_from_tensor_list
+
+from .config import Config
+from .stfs import track_queries, inject_features
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Pretrained loader (mirrors rfdetr_temporal.model._build_rfdetr…)
+# ─────────────────────────────────────────────────────────────────────
+def _build_rfdetr_from_checkpoint(cfg: Config) -> nn.Module:
+    model_cfg = RFDETRSmallConfig(num_classes=cfg.num_classes)
+    lwdetr = build_model_from_config(model_cfg)
+
+    ckpt_path = Path(cfg.rfdetr_checkpoint)
+    if ckpt_path.exists():
+        ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+        state_dict = ckpt.get("model", ckpt)
+        model_sd = lwdetr.state_dict()
+        filtered, skipped = {}, []
+        for k, v in state_dict.items():
+            if k in model_sd and model_sd[k].shape == v.shape:
+                filtered[k] = v
+            else:
+                skipped.append(k)
+        msg = lwdetr.load_state_dict(filtered, strict=False)
+        print(
+            f"[VideoRFDETR] Loaded fine-tuned checkpoint '{ckpt_path.name}'  "
+            f"loaded={len(filtered)}  missing={len(msg.missing_keys)}  "
+            f"skipped(shape)={len(skipped)}"
+        )
+    else:
+        print(
+            f"[VideoRFDETR] Checkpoint '{cfg.rfdetr_checkpoint}' not found – "
+            f"downloading Small pretrained weights …"
+        )
+        load_pretrain_weights(lwdetr, model_cfg)
+        print("[VideoRFDETR] Small pretrained weights loaded.")
+    return lwdetr
+
+
+def build_criterion(cfg: Config):
+    """Build SetCriterion + PostProcess using RF-DETR defaults."""
+    model_cfg = RFDETRSmallConfig(num_classes=cfg.num_classes)
+    train_cfg = TrainConfig(dataset_dir=".", output_dir=".")
+    criterion, postprocessors = build_criterion_from_config(model_cfg, train_cfg)
+    return criterion, postprocessors
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Main model
+# ─────────────────────────────────────────────────────────────────────
+class VideoRFDETR(nn.Module):
+    def __init__(self, cfg: Config):
+        super().__init__()
+        self.cfg = cfg
+        self.T = cfg.T
+        self.centre = cfg.T // 2
+
+        lwdetr = _build_rfdetr_from_checkpoint(cfg)
+        self.backbone = lwdetr.backbone
+        self.transformer = lwdetr.transformer
+        self.class_embed = lwdetr.class_embed
+        self.bbox_embed = lwdetr.bbox_embed
+        self.refpoint_embed = lwdetr.refpoint_embed
+        self.query_feat = lwdetr.query_feat
+        self.num_queries = lwdetr.num_queries
+        self.group_detr = lwdetr.group_detr
+        self.aux_loss = lwdetr.aux_loss
+        self.two_stage = lwdetr.two_stage
+        self.bbox_reparam = lwdetr.bbox_reparam
+        self.lite_refpoint_refine = lwdetr.lite_refpoint_refine
+
+        if self.two_stage:
+            self.transformer.enc_out_bbox_embed = lwdetr.transformer.enc_out_bbox_embed
+            self.transformer.enc_out_class_embed = lwdetr.transformer.enc_out_class_embed
+
+        if cfg.freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
+        if cfg.freeze_decoder:
+            for p in self.transformer.parameters():
+                p.requires_grad = False
+            for p in self.class_embed.parameters():
+                p.requires_grad = False
+            for p in self.bbox_embed.parameters():
+                p.requires_grad = False
+
+        # ── Refinement decoder layer (warm-init from last layer) ────
+        # Deepcopy so its parameters are independent and trainable
+        # regardless of ``freeze_decoder``.
+        self.refine_layer = copy.deepcopy(self.transformer.decoder.layers[-1])
+        # Refinement layer always runs ungrouped (group_detr=1) so it
+        # cross-attends to the full Q query set without the SA group split.
+        self.refine_layer.group_detr = 1
+        for p in self.refine_layer.parameters():
+            p.requires_grad = True
+        self.refine_norm = copy.deepcopy(self.transformer.decoder.norm)
+        for p in self.refine_norm.parameters():
+            p.requires_grad = True
+        self.refine_ref_point_head = copy.deepcopy(
+            self.transformer.decoder.ref_point_head
+        )
+        for p in self.refine_ref_point_head.parameters():
+            p.requires_grad = True
+
+        # ── KD-DETR teacher-query buffers ───────────────────────────
+        self._has_teacher_queries: bool = False
+        self.register_buffer("teacher_refpoint", torch.zeros(1, 4), persistent=False)
+        self.register_buffer(
+            "teacher_query_feat", torch.zeros(1, cfg.hidden_dim), persistent=False,
+        )
+
+        # ── Decoder-input injection hook (KD slot alignment) ────────
+        self._inject_decoder_inputs: Optional[Dict[str, torch.Tensor]] = None
+
+        def _inject_pre_hook(_m, args, kwargs):
+            inj = self._inject_decoder_inputs
+            if inj is None:
+                return None
+            new_args = (inj["tgt"], *args[1:])
+            new_kwargs = dict(kwargs)
+            new_kwargs["refpoints_unsigmoid"] = inj["refpoints"]
+            return new_args, new_kwargs
+
+        self.transformer.decoder.register_forward_pre_hook(
+            _inject_pre_hook, with_kwargs=True,
+        )
+
+        # ── Decoder-output capture (CRRCD) ──────────────────────────
+        self._captured_decoder_hs: Optional[torch.Tensor] = None
+
+        def _capture_hs_post_hook(_m, _a, _kw, output):
+            if isinstance(output, (list, tuple)) and len(output) >= 1:
+                hs = output[0]
+            else:
+                hs = output
+            if hs is not None:
+                self._captured_decoder_hs = hs[-1]
+            return None
+
+        self.transformer.decoder.register_forward_hook(
+            _capture_hs_post_hook, with_kwargs=True,
+        )
+
+        # ── Last-decoder-layer cross-attention input capture ────────
+        # Needed so the refinement layer can re-run deformable cross-
+        # attention over the same per-frame ``memory`` / ``spatial_shapes``
+        # / ``level_start_index`` / ``valid_ratios`` the first pass used.
+        self._captured_cross_inputs: Dict[str, Any] = {}
+
+        def _capture_cross_inputs_pre_hook(_m, args, kwargs):
+            # Decoder layer signature (see TransformerDecoderLayer.forward):
+            #   forward(tgt, memory, *, ..., reference_points, spatial_shapes,
+            #            level_start_index)
+            # ``memory`` is positional[1] from TransformerDecoder.forward.
+            self._captured_cross_inputs["memory"] = args[1] if len(args) > 1 \
+                else kwargs.get("memory")
+            self._captured_cross_inputs["memory_key_padding_mask"] = (
+                kwargs.get("memory_key_padding_mask")
+            )
+            self._captured_cross_inputs["spatial_shapes"] = (
+                kwargs.get("spatial_shapes")
+            )
+            self._captured_cross_inputs["level_start_index"] = (
+                kwargs.get("level_start_index")
+            )
+            return None
+
+        self.transformer.decoder.layers[-1].register_forward_pre_hook(
+            _capture_cross_inputs_pre_hook, with_kwargs=True,
+        )
+
+        # Note: ``valid_ratios`` are reconstructed in :meth:`_refinement_pass`
+        # from the captured spatial shapes (our pipeline never pads memory,
+        # so every ratio is 1.0). Re-derivation avoids plumbing masks
+        # through an extra hook.
+
+    # ─────────────────────────────────────────────────────────────────
+    #  KD helpers (unchanged from the temporal package)
+    # ─────────────────────────────────────────────────────────────────
+    def register_teacher_queries(
+        self, refpoint_w: torch.Tensor, query_feat_w: torch.Tensor,
+    ) -> None:
+        device = self.refpoint_embed.weight.device
+        self.teacher_refpoint = refpoint_w.detach().to(device).clone()
+        self.teacher_query_feat = query_feat_w.detach().to(device).clone()
+        self._has_teacher_queries = True
+
+    def _swap_group_detr(self, new_group: int, new_num_queries: int):
+        tr = self.transformer
+        orig_nq_t = getattr(tr, "num_queries", None)
+        patched: List[Tuple[nn.Module, int]] = []
+        for m in tr.modules():
+            if hasattr(m, "group_detr"):
+                patched.append((m, int(m.group_detr)))
+                m.group_detr = int(new_group)
+        if orig_nq_t is not None:
+            tr.num_queries = int(new_num_queries)
+
+        def restore() -> None:
+            for m, g in patched:
+                m.group_detr = g
+            if orig_nq_t is not None:
+                tr.num_queries = orig_nq_t
+
+        return restore
+
+    def sample_general_queries(
+        self, num_queries: int, device, dtype=torch.float32,
+    ) -> Dict[str, torch.Tensor]:
+        std = float(self.cfg.distill_general_query_std)
+        refpoint = torch.zeros(num_queries, 4, device=device, dtype=dtype)
+        query_feat = torch.randn(
+            num_queries, int(self.cfg.hidden_dim), device=device, dtype=dtype,
+        ) * std
+        return {"refpoint": refpoint, "query_feat": query_feat}
+
+    # ─────────────────────────────────────────────────────────────────
+    #  Forward
+    # ─────────────────────────────────────────────────────────────────
+    def _run_backbone(self, frames_bt: torch.Tensor):
+        """frames_bt: (BT, 3, H, W) → (srcs, masks, poss)."""
+        nested = nested_tensor_from_tensor_list(frames_bt)
+        with torch.set_grad_enabled(not self.cfg.freeze_backbone):
+            features, poss = self.backbone(nested)
+        srcs, masks = [], []
+        for feat in features:
+            src, mask = feat.decompose()
+            srcs.append(src)
+            masks.append(mask)
+        return srcs, masks, poss
+
+    def _heads(
+        self, hs_last: torch.Tensor, ref_unsigmoid: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """hs_last: (BT, Q, D), ref_unsigmoid: (BT, Q, 4)."""
+        if self.bbox_reparam:
+            delta = self.bbox_embed(hs_last)
+            cxcy = delta[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
+            wh = delta[..., 2:].exp() * ref_unsigmoid[..., 2:]
+            outputs_coord = torch.cat([cxcy, wh], dim=-1)
+        else:
+            outputs_coord = (self.bbox_embed(hs_last) + ref_unsigmoid).sigmoid()
+        outputs_class = self.class_embed(hs_last)
+        return outputs_class, outputs_coord
+
+    def _aux_outputs(self, outputs_class_stack, outputs_coord_stack):
+        return [
+            {"pred_logits": a, "pred_boxes": b}
+            for a, b in zip(outputs_class_stack[:-1], outputs_coord_stack[:-1])
+        ]
+
+    def _refinement_pass(
+        self,
+        query_embed: torch.Tensor,        # (B, T, Q, D)
+        refpoints_unsigmoid: torch.Tensor,  # (B, T, Q, 4)
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Run a single deformable-decoder layer over per-frame memory."""
+        cap = self._captured_cross_inputs
+        memory = cap.get("memory")
+        spatial_shapes = cap.get("spatial_shapes")
+        level_start_index = cap.get("level_start_index")
+        memory_key_padding_mask = cap.get("memory_key_padding_mask")
+        if memory is None or spatial_shapes is None:
+            raise RuntimeError(
+                "Refinement pass requires the first decoder pass to have "
+                "captured memory + spatial_shapes via the layer hook."
+            )
+        BT = memory.shape[0]
+        B, T, Q, D = query_embed.shape
+        assert BT == B * T, f"memory BT={BT} vs B*T={B*T}"
+
+        # Build geometric inputs analogous to TransformerDecoder.forward.
+        if self.bbox_reparam:
+            obj_center = refpoints_unsigmoid.reshape(BT, Q, 4)
+        else:
+            obj_center = refpoints_unsigmoid.sigmoid().reshape(BT, Q, 4)
+
+        # valid_ratios: shape (BT, num_levels, 2). Memory has no padding in
+        # our pipeline (dense feature maps), so every ratio is 1.0; we
+        # construct it directly to avoid plumbing masks through.
+        n_levels = spatial_shapes.shape[0]
+        valid_ratios = torch.ones(
+            BT, n_levels, 2, device=memory.device, dtype=memory.dtype,
+        )
+
+        refpoints_input = (
+            obj_center[:, :, None] * torch.cat([valid_ratios, valid_ratios], -1)[:, None]
+        )
+        query_sine_embed = gen_sineembed_for_position(
+            refpoints_input[:, :, 0, :], self.transformer.d_model / 2,
+        )
+        query_pos = self.refine_ref_point_head(query_sine_embed)
+
+        tgt = query_embed.reshape(BT, Q, D)
+        # Refinement layer: SA + Cross-attn + FFN. We force group_detr=1
+        # by setting it on the layer in __init__.
+        was_training = self.refine_layer.training
+        # Layer SA splits the queries by group_detr only when in train mode.
+        # group_detr=1 disables the split in either case.
+        out = self.refine_layer(
+            tgt,
+            memory,
+            memory_key_padding_mask=memory_key_padding_mask,
+            query_pos=query_pos,
+            query_sine_embed=query_sine_embed,
+            is_first=False,
+            reference_points=refpoints_input,
+            spatial_shapes=spatial_shapes,
+            level_start_index=level_start_index,
+        )
+        out = self.refine_norm(out)              # (BT, Q, D)
+        # Apply heads on refined embeddings; reuse refpoint reparam math.
+        outputs_class, outputs_coord = self._heads(out, obj_center)
+        # Reshape back to (B, T, Q, *).
+        outputs_class = outputs_class.reshape(B, T, Q, -1)
+        outputs_coord = outputs_coord.reshape(B, T, Q, 4)
+        _ = was_training
+        return outputs_class, outputs_coord
+
+    def forward(
+        self,
+        frames: torch.Tensor,
+        targets=None,
+        query_mode: str = "student",
+        general_queries: Optional[Dict[str, torch.Tensor]] = None,
+        decoder_inputs: Optional[Dict[str, torch.Tensor]] = None,
+    ):
+        """Forward.
+
+        Args:
+            frames: (B, T, 3, H, W) student frames.
+            query_mode: "student" → full STFS + refinement. "teacher" /
+                "general" → per-frame slot-aligned forward used by KD/CRRCD
+                branches; STFS + refinement are skipped and the output
+                is ``(B*T, Q, *)``.
+            general_queries / decoder_inputs: as in
+                :class:`rfdetr_temporal.model.TemporalRFDETR`.
+
+        Returns (student mode):
+            ``{"pred_logits": (B,T,Q,K), "pred_boxes": (B,T,Q,4),
+                "first_pass": {"pred_logits", "pred_boxes"},
+                "aux_outputs": ..., "enc_outputs": ...}``.
+        """
+        assert query_mode in ("student", "teacher", "general"), query_mode
+        B, T, C, H, W = frames.shape
+        BT = B * T
+
+        # Reset captures.
+        self._captured_decoder_hs = None
+        self._captured_cross_inputs = {}
+
+        # ── 1. Backbone on B*T frames ────────────────────────────────
+        srcs, masks, poss = self._run_backbone(
+            frames.reshape(BT, C, H, W),
+        )
+
+        # ── 2. Resolve queries ───────────────────────────────────────
+        restore_fn = None
+        if query_mode == "student":
+            if self.training:
+                refpoint_w = self.refpoint_embed.weight
+                query_feat_w = self.query_feat.weight
+            else:
+                refpoint_w = self.refpoint_embed.weight[: self.num_queries]
+                query_feat_w = self.query_feat.weight[: self.num_queries]
+        elif query_mode == "teacher":
+            assert self._has_teacher_queries, (
+                "query_mode='teacher' requires register_teacher_queries() first"
+            )
+            refpoint_w = self.teacher_refpoint
+            query_feat_w = self.teacher_query_feat
+            restore_fn = self._swap_group_detr(1, refpoint_w.shape[0])
+        else:  # general
+            assert (
+                general_queries is not None
+                and "refpoint" in general_queries
+                and "query_feat" in general_queries
+            ), "query_mode='general' requires general_queries={'refpoint','query_feat'}"
+            refpoint_w = general_queries["refpoint"]
+            query_feat_w = general_queries["query_feat"]
+            restore_fn = self._swap_group_detr(1, refpoint_w.shape[0])
+
+        if decoder_inputs is not None:
+            assert query_mode in ("teacher", "general")
+            self._inject_decoder_inputs = {
+                "tgt": decoder_inputs["tgt"].detach(),
+                "refpoints": decoder_inputs["refpoints"].detach(),
+            }
+
+        # ── 3. First decoder pass on B*T frames ──────────────────────
+        try:
+            hs, ref_unsigmoid, hs_enc, ref_enc = self.transformer(
+                srcs, masks, poss, refpoint_w, query_feat_w,
+            )
+        finally:
+            self._inject_decoder_inputs = None
+            if restore_fn is not None:
+                restore_fn()
+
+        # ── 4. KD branches: return per-frame outputs (no STFS) ──────
+        if query_mode != "student":
+            out: Optional[Dict[str, torch.Tensor]] = None
+            if hs is not None:
+                outputs_class, outputs_coord = self._heads(hs[-1], ref_unsigmoid)
+                # hs is (L, BT, Q, D); class_embed produces (L, BT, Q, K)
+                # only on hs[-1] above; for aux we need full stack.
+                stacked_class = self.class_embed(hs)
+                if self.bbox_reparam:
+                    delta_full = self.bbox_embed(hs)
+                    cxcy = delta_full[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
+                    wh = delta_full[..., 2:].exp() * ref_unsigmoid[..., 2:]
+                    stacked_coord = torch.cat([cxcy, wh], dim=-1)
+                else:
+                    stacked_coord = (self.bbox_embed(hs) + ref_unsigmoid).sigmoid()
+                out = {
+                    "pred_logits": stacked_class[-1],     # (BT, Q, K)
+                    "pred_boxes": stacked_coord[-1],
+                }
+                if self.aux_loss:
+                    out["aux_outputs"] = self._aux_outputs(stacked_class, stacked_coord)
+
+            if self.two_stage and hs_enc is not None:
+                hs_enc_list = hs_enc.chunk(1, dim=1)
+                cls_enc = self.transformer.enc_out_class_embed[0](hs_enc_list[0])
+                if out is not None:
+                    out["enc_outputs"] = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
+                else:
+                    out = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
+            return out
+
+        # ── 5. Student mode: build first-pass predictions ────────────
+        assert hs is not None, "RF-DETR student mode must run the decoder"
+        stacked_class = self.class_embed(hs)               # (L, BT, Q, K)
+        if self.bbox_reparam:
+            delta_full = self.bbox_embed(hs)
+            cxcy = delta_full[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
+            wh = delta_full[..., 2:].exp() * ref_unsigmoid[..., 2:]
+            stacked_coord = torch.cat([cxcy, wh], dim=-1)
+        else:
+            stacked_coord = (self.bbox_embed(hs) + ref_unsigmoid).sigmoid()
+
+        first_pred_logits = stacked_class[-1]              # (BT, Q, K)
+        first_pred_boxes = stacked_coord[-1]               # (BT, Q, 4)
+        K = first_pred_logits.shape[-1]
+        Q = first_pred_logits.shape[-2]
+        D = hs.shape[-1]
+
+        # ── 6. STFS: track + inject ─────────────────────────────────
+        pred_boxes_btq = first_pred_boxes.reshape(B, T, Q, 4)
+        pred_logits_btq = first_pred_logits.reshape(B, T, Q, K)
+        tracks = track_queries(
+            pred_boxes_btq, pred_logits_btq,
+            iou_weight=self.cfg.stfs_iou_weight,
+            l1_weight=self.cfg.stfs_l1_weight,
+            cls_weight=self.cfg.stfs_cls_weight,
+            iou_gate=self.cfg.stfs_match_iou_thresh,
+            score_thresh=self.cfg.stfs_track_score_thresh,
+            min_track_len=self.cfg.stfs_min_track_len,
+        )
+
+        query_embed_btq = hs[-1].reshape(B, T, Q, D)        # gradient through decoder
+        refpoint_btq = ref_unsigmoid.reshape(B, T, Q, 4)
+        enriched_emb, enriched_ref = inject_features(
+            query_embed_btq, refpoint_btq, tracks,
+            alpha=self.cfg.stfs_inject_alpha,
+        )
+
+        # ── 7. Refinement pass on enriched queries ───────────────────
+        outputs_class_btq, outputs_coord_btq = self._refinement_pass(
+            enriched_emb, enriched_ref,
+        )
+
+        out = {
+            "pred_logits": outputs_class_btq,    # (B, T, Q, K)
+            "pred_boxes": outputs_coord_btq,
+            "first_pass": {
+                "pred_logits": first_pred_logits.reshape(B, T, Q, K),
+                "pred_boxes": first_pred_boxes.reshape(B, T, Q, 4),
+            },
+        }
+
+        if self.aux_loss:
+            # Provide the first-pass intermediate decoder layers as DETR
+            # aux supervision (already per-frame, shape (BT, Q, *)).
+            out["aux_outputs"] = self._aux_outputs(stacked_class, stacked_coord)
+
+        if self.two_stage and hs_enc is not None:
+            group_detr = self.group_detr if self.training else 1
+            hs_enc_list = hs_enc.chunk(group_detr, dim=1)
+            cls_enc = []
+            for g in range(group_detr):
+                cls_enc.append(
+                    self.transformer.enc_out_class_embed[g](hs_enc_list[g])
+                )
+            cls_enc = torch.cat(cls_enc, dim=1)
+            out["enc_outputs"] = {"pred_logits": cls_enc, "pred_boxes": ref_enc}
+
+        return out
+
+    # ─────────────────────────────────────────────────────────────────
+    #  Optimiser groups
+    # ─────────────────────────────────────────────────────────────────
+    def get_param_groups(self):
+        backbone_params = []
+        decoder_params = []
+        for name, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            if "backbone" in name:
+                backbone_params.append(p)
+            else:
+                decoder_params.append(p)
+        groups = []
+        if decoder_params:
+            groups.append({"params": decoder_params, "lr": self.cfg.lr})
+        if backbone_params:
+            groups.append({"params": backbone_params, "lr": self.cfg.lr_backbone})
+        return groups
