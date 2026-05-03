@@ -175,19 +175,51 @@ def track_queries(
 # ─────────────────────────────────────────────────────────────────────
 #  Soft aggregation modules (RoI Aggregator / SFF + Proposal-Shift)
 # ─────────────────────────────────────────────────────────────────────
+class DynamicConv1D(nn.Module):
+    """1-D Dynamic Convolution for query embedding vectors (N, D).
+
+    Generates per-sample channel-wise kernel weights from the input via a
+    2-layer MLP (analogous to the spatial ``DynamicConv`` in STQD-Det / GFE
+    but for D-dimensional embedding vectors instead of (C, H, W) maps):
+
+        kernels = ReLU(FC1(x))         # (N, D) — content-adaptive weights
+        out     = proj(kernels * x)    # depthwise-equivalent channel scaling
+
+    ``proj`` is zero-initialised so that at init ``forward(x) ≈ 0``,
+    preserving the warm-start identity behaviour of the parent module.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.kernel_gen = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(inplace=True),
+            nn.Linear(d_model, d_model),
+        )
+        self.proj = nn.Linear(d_model, d_model)
+        # Zero-init → output is 0 at start → residual path is identity.
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (N, D) → (N, D)."""
+        return self.proj(self.kernel_gen(x) * x)
+
+
 class FeatureAggregator(nn.Module):
-    """Cross-attention based RoI Aggregator (STQD-Det / SFF analogue).
+    """Cross-attention + Dynamic Convolution RoI Aggregator (STQD-Det / SFF analogue).
 
     Given a weak query embedding from frame ``t`` and the strong source
     embedding from the best frame of the same track, returns a softly
     aggregated embedding:
 
-        out = LN(q + MHA(query=q, key=src, value=src))
+        x   = LN(q  + MHA(query=q, key=src, value=src))   # cross-attn mix
+        out = LN(x  + DynConv1D(x))                        # adaptive channel filter
 
-    The MHA output projection is zero-initialised so the module starts
-    as identity (``out = LN(q)``); during training the layer learns how
-    much information to import from the source slot. This avoids the
-    geometry break of a hard ``torch.where`` copy.
+    Both the MHA output projection and the ``DynConv1D`` projection are
+    zero-initialised so the module starts as identity; during training it
+    learns to import information from the source slot and to adaptively
+    re-weight channels for morphologically deformed / blurred frames.
     """
 
     def __init__(self, d_model: int, n_heads: int = 8, dropout: float = 0.0):
@@ -195,8 +227,10 @@ class FeatureAggregator(nn.Module):
         self.attn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True,
         )
-        self.norm = nn.LayerNorm(d_model)
-        # Zero-init output projection → identity behaviour at start.
+        self.norm1 = nn.LayerNorm(d_model)
+        self.dyn_conv = DynamicConv1D(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        # Zero-init MHA output projection → identity behaviour at start.
         nn.init.zeros_(self.attn.out_proj.weight)
         nn.init.zeros_(self.attn.out_proj.bias)
 
@@ -207,7 +241,8 @@ class FeatureAggregator(nn.Module):
         q_seq = q.unsqueeze(1)        # (N, 1, D)
         kv_seq = src.unsqueeze(1)
         out, _ = self.attn(query=q_seq, key=kv_seq, value=kv_seq, need_weights=False)
-        return self.norm(q_seq + out).squeeze(1)
+        x = self.norm1(q_seq + out).squeeze(1)      # (N, D) — after MHA + LN
+        return self.norm2(x + self.dyn_conv(x))      # DynConv1D residual + LN
 
 
 class RefPointShift(nn.Module):
