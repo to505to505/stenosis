@@ -469,6 +469,17 @@ def parse_args():
     p.add_argument("--consistency-threshold", type=float, default=None)
     p.add_argument("--no-consistency", action="store_true")
 
+    # Early Temporal Fusion (ETF)
+    p.add_argument(
+        "--etf", action="store_true",
+        help="Enable Early Temporal Fusion: temporal self-attention on "
+             "backbone feature maps before the RF-DETR encoder.",
+    )
+    p.add_argument("--etf-heads", type=int, default=None,
+                   help="Number of attention heads in the ETF layer (default 8).")
+    p.add_argument("--etf-dropout", type=float, default=None,
+                   help="Attention dropout for ETF (default 0.0).")
+
     # Temporal Dropout
     p.add_argument("--temporal-dropout", action="store_true",
                    help="Enable train-only temporal frame masking.")
@@ -531,6 +542,10 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "stfs_shifter_hidden_dim", args.stfs_shifter_hidden_dim, int)
     _maybe(cfg_kwargs, "consistency_weight", args.consistency_weight, float)
     _maybe(cfg_kwargs, "consistency_threshold", args.consistency_threshold, float)
+    if args.etf:
+        cfg_kwargs["etf_enabled"] = True
+    _maybe(cfg_kwargs, "etf_heads", args.etf_heads, int)
+    _maybe(cfg_kwargs, "etf_dropout", args.etf_dropout, float)
     if args.temporal_dropout:
         cfg_kwargs["temporal_dropout_enabled"] = True
     _maybe(cfg_kwargs, "temporal_dropout_prob", args.temporal_dropout_prob, float)

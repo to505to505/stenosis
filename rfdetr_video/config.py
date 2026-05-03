@@ -128,6 +128,16 @@ class Config:
     # ── Multi-frame count consistency loss (L_num) ───────────────────
     consistency_enabled: bool = True
     consistency_weight: float = 0.5
+
+    # ── Early Temporal Fusion (ETF) ───────────────────────────────────
+    # Lightweight temporal self-attention inserted between the DINOv2
+    # backbone and the RF-DETR encoder.  Disabled by default.
+    # When enabled, each backbone feature map (B*T, C, h, w) is reshaped
+    # to (B*h*w, T, C) and passed through one pre-norm MHA layer over the
+    # T axis before being fed into the transformer.
+    etf_enabled: bool = False
+    etf_heads: int = 8
+    etf_dropout: float = 0.0
     # Hard threshold for counting boxes; soft-count surrogate uses this
     # plus ``consistency_soft_temp`` so gradient flows.
     consistency_threshold: float = 0.3

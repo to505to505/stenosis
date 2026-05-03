@@ -51,6 +51,15 @@ Video RF-DETR решает те же проблемы на УРОВНЕ QUERY-С
           │  poss   (B*T, C, h, w)
           ▼
   ┌─────────────────────────────────────┐
+  │  Early Temporal Fusion (ETF)        │  опционально (etf_enabled=False)
+  │  reshape → (B*h*w, T, C)           │  один слой pre-norm temporal MHA
+  │  temporal self-attention (T axis)   │  zero-init out_proj → identity
+  │  reshape → (B*T, C, h, w)          │  ~264K параметров, lr=1e-4
+  └─────────────────────────────────────┘
+          │
+          │  srcs_enriched  (B*T, C, h, w)  ← temporal context added
+          ▼
+  ┌─────────────────────────────────────┐
   │  RF-DETR Two-Stage Transformer      │  СТАНДАРТНЫЙ без изменений
   │  encoder=None (Small config)        │
   │  decoder: 6 TransformerDecoderLayer │
@@ -116,7 +125,68 @@ backbone добавляется в группу с lr_backbone=1e-5.
 
 ВАЖНО: никакого F.unfold, никакого смешивания пикселей между кадрами.
 Кадры обрабатываются независимо, временной контекст появляется ПОЗЖЕ
-на уровне decoder query slots.
+на уровне decoder query slots (STFS) — или РАНЬШЕ через ETF (см. §3.5).
+
+────────────────────────────────────────────────────────────────────────────────
+3.5. EARLY TEMPORAL FUSION (ETF) — ОПЦИОНАЛЬНЫЙ СЛОЙ (etf_enabled=False)
+────────────────────────────────────────────────────────────────────────────────
+
+Мотивация (из SOTA видео-детекторов):
+  • STQD-Det: Global Feature Enhancement (GFE) — после backbone карты признаков
+    группируются по оси T и пропускаются через Multi-Head Attention, обмениваясь
+    информацией ДО попадания в детектор.
+  • LT-YOLO: Spatial-Temporal Fusion Neck на базе двунаправленной Mamba SSM
+    для передачи долгосрочного темпорального контекста между feature levels.
+
+Проблема текущей архитектуры без ETF:
+  Кадры проходят через encoder абсолютно независимо. Слотам декодера сложно
+  сформировать уверенные гипотезы на зашумлённых кадрах, т.к. признаки не имеют
+  никакого контекста о том, что происходит на соседних кадрах окна.
+
+Решение — EarlyTemporalFusion (class rfdetr_video.model.EarlyTemporalFusion):
+  Один лёгкий слой temporal multi-head self-attention между backbone и encoder.
+  Каждая пространственная позиция «видит» свою копию во всех T кадрах окна
+  до формирования query-слотов.
+
+Архитектура:
+  Для каждого уровня признаков src (B*T, C, h, w):
+    1. Reshape: (B*T, C, h, w) → (B, T, C, h, w) → permute → (B*h*w, T, C)
+    2. Pre-norm:  x_n = LayerNorm(x)                           # (B*h*w, T, C)
+    3. Temporal MHA: attn_out = MHA(Q=x_n, K=x_n, V=x_n)     # self-attn по оси T
+    4. Residual:     x = x + attn_out                          # (B*h*w, T, C)
+    5. Reshape back: → (B, h, w, T, C) → permute → (B*T, C, h, w)
+
+Инициализация:
+  out_proj.weight = 0, out_proj.bias = 0 → начальное поведение ≡ identity
+  (residual = 0 при старте, no geometric distortion on epoch 0).
+  warm-start safe: ETF не нарушает первый forward после загрузки чекпоинта.
+
+Параметры:
+  ≈ 4 × 256² + bias ≈ 264K параметров (для hidden_dim=256, n_heads=8)
+  Обучаются с lr=1e-4 (группа decoder_params — нет "backbone" в имени).
+  Всегда trainable даже при freeze_backbone=True.
+
+Конфиг:
+  etf_enabled : bool  = False   # включить ETF
+  etf_heads   : int   = 8       # число голов MHA
+  etf_dropout : float = 0.0     # attention dropout
+
+CLI:
+  --etf                          # включить ETF
+  --etf-heads INT                # число голов (по умолч. 8)
+  --etf-dropout FLOAT            # attention dropout (по умолч. 0.0)
+
+Память:
+  B=2, T=5, h=w=32: attention maps = (2×32×32, 5, 5) = (2048, 5, 5) — пренебрежимо
+  мало. Дополнительная память ~264K × 4 байт = 1 МБ.
+
+Положение в пайплайне:
+  DINOv2 backbone → [ETF: temporal self-attn] → RF-DETR encoder/decoder → STFS → refinement
+
+Эффект:
+  STFS-трекер получает feature maps, уже обогащённые информацией о динамике
+  видеоокна. Гипотезы на зашумлённых кадрах формируются увереннее, что снижает
+  число H-FN кадров и ослабляет нагрузку на inject_features.
 
 ────────────────────────────────────────────────────────────────────────────────
 4. ПЕРВЫЙ DECODER PASS: B*T НЕЗАВИСИМЫХ ПРЕДСКАЗАНИЙ
@@ -547,13 +617,15 @@ Best checkpoint: по headline AP@0.5 центрального кадра.
   Аспект                   rfdetr_temporal            rfdetr_video
   ──────────────────────────────────────────────────────────────────────────
   Temporal fusion          F.unfold pixel-level       query-level (STFS)
+  Early temporal fusion    нет                        ETF: temporal SA на feature maps
+                                                       (опц., --etf, ~264K params)
   Прогноз на кадры         только центральный         все T кадров
   Temporal loss            нет                        L_num (count consistency)
   Refinement               нет                        deepcopy decoder layer
   F.unfold                 ✓ (k=0 или 1)              ✗ (удалён полностью)
   H-FN embedding           —                          FeatureAggregator (MHA cross-att)
   H-FN refpoint            —                          RefPointShift (α-pad + Δcxcywh)
-  Параметров (fusion)      ~2–5M (TemporalFusion)     ~3.5M (refine + aggregator + shifter)
+  Параметров (fusion)      ~2–5M (TemporalFusion)     ~3.5M + опц. 0.26M ETF
   Память (approx, B=2,T=5) больше из-за F.unfold      меньше, O(B*T) linear
   CRRCD                    центральный кадр × 1       все T кадров × BT batch
   Consistency loss         L_kl / L_l1 window-pair   L_num soft count median

@@ -46,6 +46,90 @@ from .stfs import track_queries, inject_features, FeatureAggregator, RefPointShi
 
 
 # ─────────────────────────────────────────────────────────────────────
+#  Early Temporal Fusion (ETF)
+# ─────────────────────────────────────────────────────────────────────
+class EarlyTemporalFusion(nn.Module):
+    """Lightweight temporal self-attention applied to backbone feature maps.
+
+    Placed between the DINOv2 backbone output and the RF-DETR transformer
+    encoder so that every spatial location accumulates cross-frame
+    information *before* query slots are formed.
+
+    For each feature level ``src`` of shape ``(B*T, C, h, w)``:
+
+      1. Reshape → ``(B*h*w, T, C)``  (treat every spatial cell as a
+         "sequence" of T frame tokens).
+      2. Pre-norm → temporal multi-head self-attention → residual add.
+      3. Reshape back → ``(B*T, C, h, w)``.
+
+    The ``out_proj`` weight and bias of the attention layer are
+    zero-initialised so the module starts as an exact identity mapping
+    (warm-start safe, no geometric distortion on epoch 0).
+
+    Parameters
+    ----------
+    d_model : int
+        Channel dimension of the projected backbone features (256 for
+        RFDETRSmallConfig with P4 projector).
+    n_heads : int
+        Number of temporal attention heads (default 8).
+    dropout : float
+        Attention dropout probability (default 0.0).
+    """
+
+    def __init__(self, d_model: int, n_heads: int = 8, dropout: float = 0.0):
+        super().__init__()
+        self.norm = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        # Zero-init out_proj → identity at start (residual = 0)
+        nn.init.zeros_(self.attn.out_proj.weight)
+        nn.init.zeros_(self.attn.out_proj.bias)
+
+    def forward(
+        self,
+        srcs: List[torch.Tensor],
+        B: int,
+        T: int,
+    ) -> List[torch.Tensor]:
+        """Apply temporal self-attention to each feature level.
+
+        Args:
+            srcs:  List of ``(B*T, C, h, w)`` feature tensors (one per
+                   feature scale; typically just one level P4 for Small).
+            B:     Batch size.
+            T:     Temporal window size.
+
+        Returns:
+            List of ``(B*T, C, h, w)`` tensors with temporal context
+            mixed in.
+        """
+        enriched = []
+        for src in srcs:
+            BT, C, h, w = src.shape
+            # (B*T, C, h, w) → (B, T, C, h, w) → (B, h, w, T, C) → (B*h*w, T, C)
+            x = src.reshape(B, T, C, h, w)
+            x = x.permute(0, 3, 4, 1, 2).contiguous()   # (B, h, w, T, C)
+            x = x.reshape(B * h * w, T, C)               # (B*h*w, T, C)
+
+            # Pre-norm temporal self-attention with residual
+            x_n = self.norm(x)
+            attn_out, _ = self.attn(x_n, x_n, x_n)
+            x = x + attn_out                              # (B*h*w, T, C)
+
+            # Reshape back to (B*T, C, h, w)
+            x = x.reshape(B, h, w, T, C)
+            x = x.permute(0, 3, 4, 1, 2).contiguous()   # (B, T, C, h, w)
+            x = x.reshape(B * T, C, h, w)
+            enriched.append(x)
+        return enriched
+
+
+# ─────────────────────────────────────────────────────────────────────
 #  Pretrained loader (mirrors rfdetr_temporal.model._build_rfdetr…)
 # ─────────────────────────────────────────────────────────────────────
 def _build_rfdetr_from_checkpoint(cfg: Config) -> nn.Module:
@@ -143,6 +227,20 @@ class VideoRFDETR(nn.Module):
         )
         for p in self.refine_ref_point_head.parameters():
             p.requires_grad = True
+
+        # ── Early Temporal Fusion (ETF) ────────────────────────────────
+        # Lightweight temporal self-attention applied to backbone feature
+        # maps before the RF-DETR encoder / decoder see them.  Disabled by
+        # default (etf_enabled=False); when enabled the module is trainable
+        # and is kept separate from the frozen backbone.
+        if cfg.etf_enabled:
+            self.etf: Optional[EarlyTemporalFusion] = EarlyTemporalFusion(
+                d_model=cfg.hidden_dim,
+                n_heads=cfg.etf_heads,
+                dropout=cfg.etf_dropout,
+            )
+        else:
+            self.etf = None
 
         # ── STFS soft aggregator + proposal-shift refpoint compensator ──
         # Replaces the original hard torch.where injection. Both modules
@@ -417,6 +515,12 @@ class VideoRFDETR(nn.Module):
         srcs, masks, poss = self._run_backbone(
             frames.reshape(BT, C, H, W),
         )
+
+        # ── 1b. Early Temporal Fusion (optional) ─────────────────────
+        # Enrich per-level feature maps with cross-frame information via
+        # temporal self-attention before the decoder forms query slots.
+        if self.etf is not None:
+            srcs = self.etf(srcs, B, T)
 
         # ── 2. Resolve queries ───────────────────────────────────────
         restore_fn = None
