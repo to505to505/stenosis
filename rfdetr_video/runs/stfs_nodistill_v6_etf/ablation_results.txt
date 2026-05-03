@@ -1,0 +1,31 @@
+STFS Ablation Tests – stfs_nodistill_v6_etf
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/stfs_nodistill_v6_etf
+Base STFS params: iou_gate=0.1  score_thresh=0.3  iou_w=2.0  l1_w=5.0  cls_w=2.0
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1614 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.3749  AP50=0.1753  AP75=0.0035  AP5095=0.0461  F1=0.2275  Frag=0.23  FragRate=0.0127
+  MICRO (pooled)      AP30=0.2145  AP50=0.0511  AP75=0.0003  AP5095=0.0100  F1=0.1546  P=0.1986  R=0.1265  thr=0.2600  Frag=37  FragRate=0.0162
+  Dataset : dataset2_split_test  (31 videos, 1128 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5459  AP50=0.3622  AP75=0.0312  AP5095=0.1074  F1=0.4112  Frag=1.97  FragRate=0.0489
+  MICRO (pooled)      AP30=0.4824  AP50=0.2307  AP75=0.0050  AP5095=0.0527  F1=0.3471  P=0.4493  R=0.2828  thr=0.4100  Frag=61  FragRate=0.0541
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.2145  0.0511  0.0003  0.1546  0.1986  0.1265     37   0.0162
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.4824  0.2307  0.0050  0.3471  0.4493  0.2828     61   0.0541
