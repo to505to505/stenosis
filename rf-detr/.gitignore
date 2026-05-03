@@ -189,6 +189,7 @@ test_visualizations/
 # datasets
 data/
 datasets/
+!src/rfdetr/datasets/
 
 debugging/
 
