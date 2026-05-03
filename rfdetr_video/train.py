@@ -401,6 +401,16 @@ def train(cfg: Config):
 
     print(f"\nTraining complete. Best micro mAP@0.3={best_map30:.4f}")
     print(f"Outputs saved to {run_dir}")
+
+    # ── Free VRAM ─────────────────────────────────────────────────────
+    del train_loader, val_loader
+    del model, criterion, postprocess, optimizer, scaler, scheduler
+    if teacher is not None:
+        del teacher
+    if crrcd_module is not None:
+        del crrcd_module
+    torch.cuda.empty_cache()
+
     return run_dir
 
 

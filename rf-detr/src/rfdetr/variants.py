@@ -30,7 +30,28 @@ __all__ = [
     "RFDETRSeg2XLarge",
 ]
 
-from deprecate import deprecated_class
+try:
+    from deprecate import deprecated_class
+except ImportError:
+    import warnings
+    import functools
+
+    def deprecated_class(target=None, deprecated_in=None, remove_in=None):
+        """Fallback no-op decorator when deprecate.deprecated_class is unavailable."""
+        def decorator(cls):
+            orig_init = cls.__init__
+            @functools.wraps(orig_init)
+            def new_init(self, *args, **kwargs):
+                warnings.warn(
+                    f"{cls.__name__} is deprecated since {deprecated_in} "
+                    f"and will be removed in {remove_in}.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                orig_init(self, *args, **kwargs)
+            cls.__init__ = new_init
+            return cls
+        return decorator
 
 from rfdetr.config import (
     ModelConfig,
