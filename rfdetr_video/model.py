@@ -42,7 +42,7 @@ from rfdetr.models.transformer import gen_sineembed_for_position
 from rfdetr.utilities.tensors import nested_tensor_from_tensor_list
 
 from .config import Config
-from .stfs import track_queries, inject_features
+from .stfs import track_queries, inject_features, FeatureAggregator, RefPointShift
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -143,6 +143,28 @@ class VideoRFDETR(nn.Module):
         )
         for p in self.refine_ref_point_head.parameters():
             p.requires_grad = True
+
+        # ── STFS soft aggregator + proposal-shift refpoint compensator ──
+        # Replaces the original hard torch.where injection. Both modules
+        # are zero-initialised on their last linear so the initial
+        # behaviour ≈ the legacy hard copy (FeatureAggregator → identity
+        # on weak embedding; RefPointShift → α-padded source refpoint).
+        if cfg.stfs_aggregator_enabled:
+            self.stfs_aggregator: Optional[FeatureAggregator] = FeatureAggregator(
+                d_model=cfg.hidden_dim,
+                n_heads=cfg.stfs_aggregator_heads,
+                dropout=cfg.stfs_aggregator_dropout,
+            )
+        else:
+            self.stfs_aggregator = None
+        if cfg.stfs_shifter_enabled:
+            self.stfs_shifter: Optional[RefPointShift] = RefPointShift(
+                d_model=cfg.hidden_dim,
+                hidden_dim=cfg.stfs_shifter_hidden_dim,
+                padding_alpha=cfg.stfs_shifter_padding_alpha,
+            )
+        else:
+            self.stfs_shifter = None
 
         # ── KD-DETR teacher-query buffers ───────────────────────────
         self._has_teacher_queries: bool = False
@@ -505,6 +527,8 @@ class VideoRFDETR(nn.Module):
         enriched_emb, enriched_ref = inject_features(
             query_embed_btq, refpoint_btq, tracks,
             alpha=self.cfg.stfs_inject_alpha,
+            aggregator=self.stfs_aggregator,
+            shifter=self.stfs_shifter,
         )
 
         # ── 7. Refinement pass on enriched queries ───────────────────

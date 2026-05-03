@@ -452,6 +452,17 @@ def parse_args():
     p.add_argument("--stfs-match-iou-thresh", type=float, default=None)
     p.add_argument("--stfs-min-track-len", type=int, default=None)
     p.add_argument("--stfs-inject-alpha", type=float, default=None)
+    # Soft aggregator (cross-attention embedding mix)
+    p.add_argument("--no-stfs-aggregator", action="store_true",
+                   help="Disable FeatureAggregator; revert to hard torch.where blend.")
+    p.add_argument("--stfs-aggregator-heads", type=int, default=None)
+    p.add_argument("--stfs-aggregator-dropout", type=float, default=None)
+    # Proposal-shift refpoint compensator
+    p.add_argument("--no-stfs-shifter", action="store_true",
+                   help="Disable RefPointShift; revert to direct source refpoint copy.")
+    p.add_argument("--stfs-shifter-padding-alpha", type=float, default=None,
+                   help="wh expansion factor (default 1.5, STQD-Det uses 2.0).")
+    p.add_argument("--stfs-shifter-hidden-dim", type=int, default=None)
 
     # Consistency
     p.add_argument("--consistency-weight", type=float, default=None)
@@ -510,6 +521,14 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "stfs_match_iou_thresh", args.stfs_match_iou_thresh, float)
     _maybe(cfg_kwargs, "stfs_min_track_len", args.stfs_min_track_len, int)
     _maybe(cfg_kwargs, "stfs_inject_alpha", args.stfs_inject_alpha, float)
+    if args.no_stfs_aggregator:
+        cfg_kwargs["stfs_aggregator_enabled"] = False
+    _maybe(cfg_kwargs, "stfs_aggregator_heads", args.stfs_aggregator_heads, int)
+    _maybe(cfg_kwargs, "stfs_aggregator_dropout", args.stfs_aggregator_dropout, float)
+    if args.no_stfs_shifter:
+        cfg_kwargs["stfs_shifter_enabled"] = False
+    _maybe(cfg_kwargs, "stfs_shifter_padding_alpha", args.stfs_shifter_padding_alpha, float)
+    _maybe(cfg_kwargs, "stfs_shifter_hidden_dim", args.stfs_shifter_hidden_dim, int)
     _maybe(cfg_kwargs, "consistency_weight", args.consistency_weight, float)
     _maybe(cfg_kwargs, "consistency_threshold", args.consistency_threshold, float)
     if args.temporal_dropout:

@@ -10,20 +10,32 @@ Workflow on a window of T frames after the first decoder pass:
        (no match above ``cfg.stfs_match_iou_thresh``) are flagged
        Hypothesis-False-Negative (H-FN).
 
-    2. ``inject_features`` replaces every H-FN slot's query embedding +
-       reference point with the embedding / refpoint from the strongest
-       frame in that track (max class probability). Implemented with
-       ``torch.where`` so source-slot gradients flow into the decoder
-       through the injected slot.
+    2. ``inject_features`` produces enriched ``(query_embed, refpoint)``
+       tensors for the refinement decoder. For every H-FN slot:
+         * embeddings are mixed with the strong source slot's embedding
+           via a learnable cross-attention :class:`FeatureAggregator`
+           (Query = current weak embedding, Key/Value = strong source
+           embedding). This avoids the geometry-breaking hard copy of
+           ``torch.where`` and is analogous to the RoI Aggregator in
+           STQD-Det / SFF in Stenosis-DetNet.
+         * reference points are taken from the strong source frame, the
+           wh is multiplied by a padding coefficient ``α`` (PSSTT-style
+           local search window) and a learnable :class:`RefPointShift`
+           predicts a small (Δcx, Δcy, Δw, Δh) offset to compensate for
+           cardiac / breathing motion of the vessel.
+       Both modules are zero-initialised on their last linear so the
+       initial behaviour ≈ the previous hard-copy injection (drift of
+       refpoint = 0, embedding residual = 0), keeping warm-init safe.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 from scipy.optimize import linear_sum_assignment
 
 
@@ -161,6 +173,97 @@ def track_queries(
 
 
 # ─────────────────────────────────────────────────────────────────────
+#  Soft aggregation modules (RoI Aggregator / SFF + Proposal-Shift)
+# ─────────────────────────────────────────────────────────────────────
+class FeatureAggregator(nn.Module):
+    """Cross-attention based RoI Aggregator (STQD-Det / SFF analogue).
+
+    Given a weak query embedding from frame ``t`` and the strong source
+    embedding from the best frame of the same track, returns a softly
+    aggregated embedding:
+
+        out = LN(q + MHA(query=q, key=src, value=src))
+
+    The MHA output projection is zero-initialised so the module starts
+    as identity (``out = LN(q)``); during training the layer learns how
+    much information to import from the source slot. This avoids the
+    geometry break of a hard ``torch.where`` copy.
+    """
+
+    def __init__(self, d_model: int, n_heads: int = 8, dropout: float = 0.0):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True,
+        )
+        self.norm = nn.LayerNorm(d_model)
+        # Zero-init output projection → identity behaviour at start.
+        nn.init.zeros_(self.attn.out_proj.weight)
+        nn.init.zeros_(self.attn.out_proj.bias)
+
+    def forward(self, q: torch.Tensor, src: torch.Tensor) -> torch.Tensor:
+        """q, src: (N, D) → (N, D). N is the number of H-FN slots."""
+        if q.numel() == 0:
+            return q
+        q_seq = q.unsqueeze(1)        # (N, 1, D)
+        kv_seq = src.unsqueeze(1)
+        out, _ = self.attn(query=q_seq, key=kv_seq, value=kv_seq, need_weights=False)
+        return self.norm(q_seq + out).squeeze(1)
+
+
+class RefPointShift(nn.Module):
+    """Proposal-Shift refpoint compensator (PSSTT-style local window).
+
+    Predicts a small offset ``(Δcx, Δcy, Δw, Δh)`` added on top of a
+    fixed padding-coefficient expansion of the source refpoint's wh:
+
+        cxcy_out = src_cxcy + Δcxcy
+        wh_out   = src_wh * padding_alpha + Δwh
+
+    The MLP head is zero-initialised so the initial behaviour is a
+    deterministic α-padded copy of ``src_ref`` (matching the STQD-Det
+    α=2 padding coefficient) while leaving room for the network to
+    learn frame-to-frame motion compensation.
+
+    Designed for ``bbox_reparam=True`` refpoints (positive cxcywh in
+    image coordinates), which is the RF-DETR Small default.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        hidden_dim: Optional[int] = None,
+        padding_alpha: float = 1.5,
+    ):
+        super().__init__()
+        h = hidden_dim if hidden_dim is not None else d_model
+        self.padding_alpha = float(padding_alpha)
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * d_model + 4, h),
+            nn.ReLU(inplace=True),
+            nn.Linear(h, 4),
+        )
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(
+        self,
+        cur_emb: torch.Tensor,        # (N, D)  current weak embedding
+        src_emb: torch.Tensor,        # (N, D)  strong source embedding
+        src_ref: torch.Tensor,        # (N, 4)  cxcywh refpoint of source
+    ) -> torch.Tensor:
+        if cur_emb.numel() == 0:
+            return src_ref
+        h = torch.cat([cur_emb, src_emb, src_ref], dim=-1)
+        delta = self.mlp(h)                              # (N, 4)
+        cxcy = src_ref[..., :2] + delta[..., :2]
+        wh = src_ref[..., 2:] * self.padding_alpha + delta[..., 2:]
+        # Clamp wh to be strictly positive so downstream sin-embed /
+        # bbox-reparam math stays well-defined.
+        wh = wh.clamp(min=1e-6)
+        return torch.cat([cxcy, wh], dim=-1)
+
+
+# ─────────────────────────────────────────────────────────────────────
 #  Feature injection
 # ─────────────────────────────────────────────────────────────────────
 def inject_features(
@@ -169,9 +272,23 @@ def inject_features(
     tracks_per_batch: List[List[_Track]],
     *,
     alpha: float,
+    aggregator: Optional[FeatureAggregator] = None,
+    shifter: Optional[RefPointShift] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Replace H-FN slot embeddings + refpoints with the source-frame
-    counterpart from the same track. Returns autograd-safe new tensors.
+    """Build refined ``(query_embed, refpoint)`` for the refinement pass.
+
+    For H-FN slots the embedding and refpoint are taken from the
+    strongest in-track frame:
+
+      * If ``aggregator`` is provided → the H-FN embedding is replaced by
+        ``FeatureAggregator(weak, strong)`` (soft mix via cross-attention).
+        Otherwise the legacy α-blend ``(1-α)·weak + α·strong`` is used.
+      * If ``shifter`` is provided → the refpoint is replaced by
+        ``RefPointShift(weak_emb, strong_emb, strong_ref)`` (α-padded
+        source refpoint plus learnable Δcxcywh). Otherwise the strong
+        source refpoint is copied as-is.
+
+    Non-H-FN slots are returned unchanged.
     """
     B, T, Q, D = query_embed.shape
     device = query_embed.device
@@ -211,21 +328,51 @@ def inject_features(
     src_emb = flat_emb.gather(1, src_idx_emb.reshape(B, T * Q, D)).reshape(B, T, Q, D)
     src_box = flat_box.gather(1, src_idx_box.reshape(B, T * Q, 4)).reshape(B, T, Q, 4)
 
-    mix = float(alpha)
-    mask_emb = inject_mask.unsqueeze(-1).to(query_embed.dtype)
-    mask_box = inject_mask.unsqueeze(-1).to(refpoint.dtype)
+    # ── Embedding path ──────────────────────────────────────────────
+    if aggregator is not None:
+        # Gather only the H-FN slots, run cross-attention once, scatter.
+        flat_mask = inject_mask.reshape(-1)              # (B*T*Q,)
+        if flat_mask.any():
+            flat_q = query_embed.reshape(-1, D)
+            flat_s = src_emb.reshape(-1, D)
+            cur_sel = flat_q[flat_mask]                  # (N, D)
+            src_sel = flat_s[flat_mask]                  # (N, D)
+            mixed = aggregator(cur_sel, src_sel)         # (N, D)
+            new_emb_flat = flat_q.clone()
+            new_emb_flat[flat_mask] = mixed
+            new_emb = new_emb_flat.reshape(B, T, Q, D)
+        else:
+            new_emb = query_embed
+    else:
+        mix = float(alpha)
+        new_emb = torch.where(
+            inject_mask.unsqueeze(-1),
+            (1.0 - mix) * query_embed + mix * src_emb,
+            query_embed,
+        )
 
-    new_emb = torch.where(
-        inject_mask.unsqueeze(-1),
-        (1.0 - mix) * query_embed + mix * src_emb,
-        query_embed,
-    )
-    new_box = torch.where(
-        inject_mask.unsqueeze(-1),
-        src_box,                      # geometry from the strong frame
-        refpoint,
-    )
-    # Reference the alpha-blend mask values to silence linting on the
-    # explicit dtype variables (kept available for future schedules).
-    _ = mask_emb, mask_box
+    # ── Reference-point path ────────────────────────────────────────
+    if shifter is not None:
+        flat_mask = inject_mask.reshape(-1)
+        if flat_mask.any():
+            flat_q = query_embed.reshape(-1, D)
+            flat_s_emb = src_emb.reshape(-1, D)
+            flat_s_box = src_box.reshape(-1, 4)
+            flat_box_in = refpoint.reshape(-1, 4)
+            cur_sel = flat_q[flat_mask]
+            src_emb_sel = flat_s_emb[flat_mask]
+            src_box_sel = flat_s_box[flat_mask]
+            shifted = shifter(cur_sel, src_emb_sel, src_box_sel)   # (N, 4)
+            new_box_flat = flat_box_in.clone()
+            new_box_flat[flat_mask] = shifted
+            new_box = new_box_flat.reshape(B, T, Q, 4)
+        else:
+            new_box = refpoint
+    else:
+        new_box = torch.where(
+            inject_mask.unsqueeze(-1),
+            src_box,                      # geometry from the strong frame
+            refpoint,
+        )
+
     return new_emb, new_box

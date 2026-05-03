@@ -1,7 +1,7 @@
 ================================================================================
   VIDEO RF-DETR: ПОДРОБНОЕ ОПИСАНИЕ АРХИТЕКТУРЫ
   Пакет: rfdetr_video/
-  Дата: апрель 2026
+  Дата: май 2026
 ================================================================================
 
 Предыдущая модель: rfdetr_temporal/ — центральный кадр, F.unfold pixel-level fusion
@@ -27,8 +27,8 @@ Video RF-DETR решает те же проблемы на УРОВНЕ QUERY-С
   1. Backbone и encoder работают на ВСЕХ T кадрах независимо.
   2. Первый decoder pass выдаёт полный набор предсказаний (B,T,Q,4/K) для
      всех T кадров одновременно.
-  3. STFS анализирует слоты cross-frame: строит тректы, инжектирует признаки
-     «пропавшего» слота из лучшего кадра.
+  3. STFS анализирует слоты cross-frame: строит тректы, мягко агрегирует
+     признаки «пропавшего» слота из лучшего кадра (FeatureAggregator + RefPointShift).
   4. Refinement decoder layer уточняет обогащённые слоты через deformable
      cross-attention к per-frame memory.
   5. Loss считается по ВСЕМ T кадрам → модель обучается детектировать стеноз
@@ -80,12 +80,14 @@ Video RF-DETR решает те же проблемы на УРОВНЕ QUERY-С
           ▼
   ┌─────────────────────────────────────┐
   │  STFS: inject_features              │  GPU, autograd-safe
-  │  H-FN слоты ← embeddings лучшего   │
-  │  кадра трека (torch.where + gather) │
+  │  H-FN слоты (embedding):            │
+  │    FeatureAggregator (MHA cross-att)│  Q=слабый, KV=сильный → мягкий mix
+  │  H-FN слоты (refpoint):             │
+  │    RefPointShift (MLP)              │  α-padding wh + Δcxcywh offset
   └─────────────────────────────────────┘
           │
-          │  enriched_emb  (B, T, Q, D)   ← grad через hs[-1]
-          │  enriched_ref  (B, T, Q, 4)
+          │  enriched_emb  (B, T, Q, D)   ← grad через hs[-1] + aggregator
+          │  enriched_ref  (B, T, Q, 4)   ← α-padded src_ref + learned shift
           ▼
   ┌─────────────────────────────────────┐
   │  Refinement Decoder Layer           │  deepcopy(decoder.layers[-1])
@@ -186,17 +188,38 @@ embedding + refpoint из лучшего (наиболее уверенного)
   src_q[b, t, best_q] = best_q        # (B, T, Q) индексы исходного слота
   inject_mask[b, t, best_q] = True
 
-  # Flatten T*Q, gather source embeddings
+  # Flatten T*Q, gather source embeddings / refpoints
   flat_emb = query_embed.reshape(B, T*Q, D)
-  src_flat_idx = src_t * Q + src_q    # (B, T, Q) → (B, T*Q)
-  src_emb = flat_emb.gather(1, src_flat_idx...) → (B, T, Q, D)
+  src_emb  = flat_emb.gather(1, ...) → (B, T, Q, D)
+  src_box  = flat_box.gather(1, ...) → (B, T, Q, 4)
 
-  # Blend (alpha=1.0 → полная замена по умолчанию)
-  new_emb = torch.where(inject_mask, (1-α)*query_embed + α*src_emb, query_embed)
-  new_ref = torch.where(inject_mask, src_ref, refpoint)
+── Embedding path ──────────────────────────────────────────────────────
 
-При alpha=1.0 H-FN слот получает точную копию embedding+refpoint лучшего кадра.
-Градиент течёт через new_emb → query_embed[best_t, best_q] (source slot).
+  Если FeatureAggregator включён (stfs_aggregator_enabled=True, по умолч.):
+    Только H-FN слоты (N штук) подаются в MHA Cross-Attention:
+      out = LN(weak_q + MHA(Q=weak_q, KV=strong_src))   # (N, D)
+    Аналог RoI Aggregator из STQD-Det / SFF из Stenosis-DetNet.
+    Zero-init out_proj → начальное поведение ≈ identity (LN(weak_q)).
+
+  Иначе (legacy):
+    new_emb = torch.where(mask, (1-α)·query_embed + α·src_emb, query_embed)
+    При α=1.0 → точная копия (прежнее поведение до мая 2026).
+
+── Reference-point path ────────────────────────────────────────────────
+
+  Если RefPointShift включён (stfs_shifter_enabled=True, по умолч.):
+    h = concat(weak_emb, strong_emb, src_ref)     # (N, 2D+4)
+    δ = MLP(h)  ← zero-init последний слой        # (N, 4)
+    cxcy_out = src_cxcy + δ[:2]
+    wh_out   = src_wh * padding_alpha + δ[2:]      # padding_alpha=1.5 по умолч.
+    Аналог padding coefficient α=2 из STQD-Det и Proposal-Shift из PSSTT.
+    Сеть учится: «Стеноз был где-то здесь, осмотрись вокруг».
+
+  Иначе (legacy):
+    new_ref = torch.where(mask, src_ref, refpoint)
+
+Градиент течёт через new_emb → query_embed[best_t, best_q] (source slot)
+и через aggregator + shifter параметры.
 
 ────────────────────────────────────────────────────────────────────────────────
 6. REFINEMENT DECODER LAYER
@@ -205,15 +228,25 @@ embedding + refpoint из лучшего (наиболее уверенного)
 6.1 Инициализация
 ──────────────────
 
-  self.refine_layer = copy.deepcopy(transformer.decoder.layers[-1])
-  self.refine_norm  = copy.deepcopy(transformer.decoder.norm)
-  self.refine_ref_point_head = copy.deepcopy(transformer.decoder.ref_point_head)
+  self.refine_layer            = copy.deepcopy(transformer.decoder.layers[-1])
+  self.refine_norm             = copy.deepcopy(transformer.decoder.norm)
+  self.refine_ref_point_head   = copy.deepcopy(transformer.decoder.ref_point_head)
+  self.stfs_aggregator         = FeatureAggregator(D, n_heads, dropout)  # если включён
+  self.stfs_shifter            = RefPointShift(D, hidden_dim, padding_alpha)  # если включён
 
 Warm-init: слой стартует с теми же весами, что лучший обученный decoder layer.
 Параметры независимы — deepcopy создаёт отдельные тензоры, не разделяемые
 с оригинальным decoder. Требуют градиентов принудительно (requires_grad=True).
 
   refine_layer.group_detr = 1   — отключает SA-split на группы
+
+  FeatureAggregator:
+    nn.MultiheadAttention(d_model, n_heads) + LayerNorm
+    out_proj zero-init → LN(q) при старте (нет геометрических артефактов)
+
+  RefPointShift:
+    Linear(2D+4 → hidden) → ReLU → Linear(hidden → 4)
+    last Linear zero-init → начальный сдвиг = 0, wh = src_wh * padding_alpha
 
 6.2 Захват входов decoder (хуки)
 ───────────────────────────────────
@@ -460,6 +493,8 @@ SetCriterion внутри для каждого из B*T "изображений
   query_feat                 ✅ обучается   буфер           буфер
   transformer.decoder        ✅             ✅               ✅
   refine_layer               ✅             ✗               ✗
+  stfs_aggregator            ✅             ✗               ✗
+  stfs_shifter               ✅             ✗               ✗
   class_embed / bbox_embed   ✅             ✅               ✅
   backbone                   ✗ (frozen)     ✗ (frozen)      ✗ (frozen)
   teacher.*                  —              0 (no_grad)      0 (no_grad)
@@ -516,7 +551,9 @@ Best checkpoint: по headline AP@0.5 центрального кадра.
   Temporal loss            нет                        L_num (count consistency)
   Refinement               нет                        deepcopy decoder layer
   F.unfold                 ✓ (k=0 или 1)              ✗ (удалён полностью)
-  Параметров (fusion)      ~2–5M (TemporalFusion)     ~3M (refinement layer)
+  H-FN embedding           —                          FeatureAggregator (MHA cross-att)
+  H-FN refpoint            —                          RefPointShift (α-pad + Δcxcywh)
+  Параметров (fusion)      ~2–5M (TemporalFusion)     ~3.5M (refine + aggregator + shifter)
   Память (approx, B=2,T=5) больше из-за F.unfold      меньше, O(B*T) linear
   CRRCD                    центральный кадр × 1       все T кадров × BT batch
   Consistency loss         L_kl / L_l1 window-pair   L_num soft count median

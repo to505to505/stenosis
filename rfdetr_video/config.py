@@ -104,7 +104,26 @@ class Config:
     # Drop tracks shorter than this many confident frames (H-FP filter).
     stfs_min_track_len: int = 3
     # α in: q[t,q] ← (1-α)·q[t,q] + α·q[t*,q*] for H-FN slots.
+    # Used as the legacy hard-blend weight when ``stfs_aggregator_enabled``
+    # is False; ignored otherwise.
     stfs_inject_alpha: float = 1.0
+
+    # ── Soft RoI Aggregator (STQD-Det / SFF-style cross-attention) ────
+    # When enabled, H-FN slot embeddings are mixed with the strong source
+    # embedding through a learnable Multi-Head Cross-Attention block
+    # (Q = weak slot, KV = strong source) instead of a hard torch.where.
+    stfs_aggregator_enabled: bool = True
+    stfs_aggregator_heads: int = 8
+    stfs_aggregator_dropout: float = 0.0
+
+    # ── Proposal-Shift refpoint compensation (PSSTT-style) ────────────
+    # When enabled, H-FN slot refpoints are taken from the strong source
+    # frame, expanded by ``stfs_shifter_padding_alpha`` (analogous to
+    # STQD-Det's α=2 padding coefficient) and adjusted by a small
+    # learnable Δcxcywh predicted from (weak_emb, strong_emb, strong_ref).
+    stfs_shifter_enabled: bool = True
+    stfs_shifter_padding_alpha: float = 1.5
+    stfs_shifter_hidden_dim: Optional[int] = None  # default: hidden_dim
 
     # ── Multi-frame count consistency loss (L_num) ───────────────────
     consistency_enabled: bool = True
