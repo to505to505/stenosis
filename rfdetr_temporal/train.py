@@ -428,8 +428,8 @@ def train(cfg: Config):
             history.append(record)
 
             print(
-                f"  val — mAP50={metrics['AP@0.5']:.4f}  "
-                f"mAP50-95={metrics['AP@0.5:0.95']:.4f}  "
+                f"mAP30={metrics['AP@0.3']:.4f}  "
+                f"mAP50={metrics['AP@0.5']:.4f}  "
                 f"F1={metrics['F1']:.4f}  "
                 f"val_loss={metrics.get('val_loss', 0):.4f}"
             )

@@ -126,35 +126,51 @@ def f1_confidence_sweep(all_detections, all_ground_truths, iou_threshold=0.5, n=
     total_gt = sum(gt.shape[0] for gt in all_ground_truths)
     if total_gt == 0:
         return 0.0, 0.0, 0.0, 0.0
+
+    # Precompute once: sort detections by score desc, build IoU matrix (N_det, N_gt).
+    precomputed = []
+    for det, gt in zip(all_detections, all_ground_truths):
+        scores = det["scores"]
+        boxes = det["boxes"]
+        n_gt = gt.shape[0]
+        if len(scores) == 0 or n_gt == 0:
+            precomputed.append((scores, None, n_gt))
+            continue
+        order = np.argsort(-scores)
+        s_sorted = scores[order]
+        b_sorted = boxes[order]
+        # (N_det, 1) broadcast with (N_gt,) → (N_det, N_gt)
+        ixmin = np.maximum(b_sorted[:, 0:1], gt[:, 0])
+        iymin = np.maximum(b_sorted[:, 1:2], gt[:, 1])
+        ixmax = np.minimum(b_sorted[:, 2:3], gt[:, 2])
+        iymax = np.minimum(b_sorted[:, 3:4], gt[:, 3])
+        iw = np.maximum(ixmax - ixmin, 0.0)
+        ih = np.maximum(iymax - iymin, 0.0)
+        inter = iw * ih
+        det_area = (b_sorted[:, 2] - b_sorted[:, 0]) * (b_sorted[:, 3] - b_sorted[:, 1])
+        gt_area = (gt[:, 2] - gt[:, 0]) * (gt[:, 3] - gt[:, 1])
+        union = det_area[:, None] + gt_area[None, :] - inter
+        iou_mat = inter / np.maximum(union, 1e-6)
+        precomputed.append((s_sorted, iou_mat, n_gt))
+
     best_f1, best_p, best_r, best_thr = 0.0, 0.0, 0.0, 0.0
     for thr in np.linspace(0.0, 1.0, n):
         tp = fp = fn = 0
-        for det, gt in zip(all_detections, all_ground_truths):
-            mask = det["scores"] >= thr
-            filt = det["boxes"][mask]
-            n_gt = gt.shape[0]
+        for s_sorted, iou_mat, n_gt in precomputed:
             if n_gt == 0:
-                fp += filt.shape[0]
+                fp += int(np.sum(s_sorted >= thr)) if len(s_sorted) > 0 else 0
                 continue
-            if filt.shape[0] == 0:
+            if len(s_sorted) == 0:
+                fn += n_gt
+                continue
+            keep = s_sorted >= thr
+            if not np.any(keep):
                 fn += n_gt
                 continue
             matched = np.zeros(n_gt, dtype=bool)
-            order = np.argsort(-det["scores"][mask])
-            for d_box in filt[order]:
-                ixmin = np.maximum(gt[:, 0], d_box[0])
-                iymin = np.maximum(gt[:, 1], d_box[1])
-                ixmax = np.minimum(gt[:, 2], d_box[2])
-                iymax = np.minimum(gt[:, 3], d_box[3])
-                iw = np.maximum(ixmax - ixmin, 0.0)
-                ih = np.maximum(iymax - iymin, 0.0)
-                inter = iw * ih
-                det_a = (d_box[2] - d_box[0]) * (d_box[3] - d_box[1])
-                gt_a = (gt[:, 2] - gt[:, 0]) * (gt[:, 3] - gt[:, 1])
-                union = det_a + gt_a - inter
-                iou = inter / np.maximum(union, 1e-6)
-                best = np.argmax(iou)
-                if iou[best] >= iou_threshold and not matched[best]:
+            for iou_row in iou_mat[keep]:
+                best = np.argmax(iou_row)
+                if iou_row[best] >= iou_threshold and not matched[best]:
                     matched[best] = True
                     tp += 1
                 else:
@@ -232,22 +248,13 @@ def evaluate(model, loader, criterion, postprocess, cfg: Config, device):
             all_ground_truths.append(gt_xyxy)
 
     # Compute metrics
+    ap30 = evaluate_map(all_detections, all_ground_truths, 0.3)
     ap50 = evaluate_map(all_detections, all_ground_truths, 0.5)
-    ap75 = evaluate_map(all_detections, all_ground_truths, 0.75)
-    iou_thrs = np.arange(0.5, 1.0, 0.05)
-    ap5095 = float(np.mean([
-        evaluate_map(all_detections, all_ground_truths, t) for t in iou_thrs
-    ]))
-    mar = float(np.mean([
-        compute_max_recall(all_detections, all_ground_truths, t) for t in iou_thrs
-    ]))
     f1, prec, rec, conf = f1_confidence_sweep(all_detections, all_ground_truths)
 
     return {
+        "AP@0.3": ap30,
         "AP@0.5": ap50,
-        "AP@0.75": ap75,
-        "AP@0.5:0.95": ap5095,
-        "mAR": mar,
         "F1": f1,
         "precision": prec,
         "recall": rec,

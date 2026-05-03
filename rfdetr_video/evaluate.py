@@ -15,7 +15,6 @@ from torch.cuda.amp import autocast
 
 from rfdetr_temporal.evaluate import (
     evaluate_map,
-    compute_max_recall,
     f1_confidence_sweep,
 )
 
@@ -117,18 +116,12 @@ def evaluate(model, loader, criterion, postprocess, cfg: Config, device):
     iou_thrs = np.arange(0.5, 1.0, 0.05)
 
     def _metric_block(dets, gts, prefix=""):
-        ap30 = evaluate_map(dets, gts, 0.3)   # micro: single global PR curve
+        ap30 = evaluate_map(dets, gts, 0.3)
         ap50 = evaluate_map(dets, gts, 0.5)
-        ap75 = evaluate_map(dets, gts, 0.75)
-        ap5095 = float(np.mean([evaluate_map(dets, gts, t) for t in iou_thrs]))
-        mar = float(np.mean([compute_max_recall(dets, gts, t) for t in iou_thrs]))
         f1, prec, rec, conf = f1_confidence_sweep(dets, gts)
         return {
             f"{prefix}AP@0.3": ap30,
             f"{prefix}AP@0.5": ap50,
-            f"{prefix}AP@0.75": ap75,
-            f"{prefix}AP@0.5:0.95": ap5095,
-            f"{prefix}mAR": mar,
             f"{prefix}F1": f1,
             f"{prefix}precision": prec,
             f"{prefix}recall": rec,
