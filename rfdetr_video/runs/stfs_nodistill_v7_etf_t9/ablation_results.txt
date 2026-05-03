@@ -1,0 +1,31 @@
+STFS Ablation Tests – stfs_nodistill_v7_etf_t9
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/stfs_nodistill_v7_etf_t9
+Base STFS params: iou_gate=0.1  score_thresh=0.3  iou_w=2.0  l1_w=5.0  cls_w=2.0
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1102 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.3572  AP50=0.1737  AP75=0.0149  AP5095=0.0488  F1=0.2190  Frag=0.15  FragRate=0.0102
+  MICRO (pooled)      AP30=0.1929  AP50=0.0443  AP75=0.0005  AP5095=0.0093  F1=0.1277  P=0.1394  R=0.1179  thr=0.2100  Frag=24  FragRate=0.0150
+  Dataset : dataset2_split_test  (31 videos, 1006 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5671  AP50=0.3871  AP75=0.0397  AP5095=0.1221  F1=0.4279  Frag=1.81  FragRate=0.0459
+  MICRO (pooled)      AP30=0.4817  AP50=0.2501  AP75=0.0061  AP5095=0.0569  F1=0.3408  P=0.4345  R=0.2803  thr=0.4000  Frag=56  FragRate=0.0557
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.1929  0.0443  0.0005  0.1277  0.1394  0.1179     24   0.0150
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.4817  0.2501  0.0061  0.3408  0.4345  0.2803     56   0.0557
