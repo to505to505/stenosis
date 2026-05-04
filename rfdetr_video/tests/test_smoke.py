@@ -267,3 +267,165 @@ def test_crrcd_per_frame():
     loss.backward()
     assert student_hs.grad is not None and student_hs.grad.abs().sum().item() > 0
     assert teacher_hs.grad is None
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_distill_one_step():
+    """End-to-end one training step exercising the three KD branches.
+
+    Mirrors :func:`rfdetr_video.train.train`'s inner loop (Branch 1 det,
+    Branch 2 KD-spec + CRRCD, Branch 3 KD-general). Asserts:
+
+      • Refinement layer receives gradient (Branch 1).
+      • ETF receives gradient (Branch 1 + 2 + 3 — applied in all modes).
+      • CRRCD relation MLPs receive gradient (Branch 2 only).
+      • Teacher params have ``.grad is None`` everywhere.
+    """
+    teacher_ckpt = ROOT / "rfdetr_runs" / "rfdetr_large_arcade2x_704_reg" \
+        / "checkpoint_best_total.pth"
+    if not teacher_ckpt.exists():
+        pytest.skip(f"Teacher checkpoint not available: {teacher_ckpt}")
+
+    from rfdetr_video.model import VideoRFDETR, build_criterion
+    from rfdetr_video.distill import (
+        VideoFrozenRFDETRTeacher,
+        distillation_loss,
+        CRRCDLoss,
+    )
+    from rfdetr_video.train import _flatten_targets, _flatten_predictions
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    cfg = Config(
+        batch_size=1,
+        T=3,
+        img_size=384,
+        distill_teacher_resolution=384,   # smaller HR to keep VRAM sane in test
+        distill_enabled=True,
+        distill_general_enabled=True,
+        distill_num_general_queries=16,
+        distill_num_queries=300,
+        crrcd_enabled=True,
+        crrcd_num_fg=4, crrcd_num_bg=8, crrcd_num_negatives=4,
+        consistency_enabled=True,
+        etf_enabled=True,
+        wandb_enabled=False,
+    )
+
+    model = VideoRFDETR(cfg).to(device).train()
+    criterion, _ = build_criterion(cfg)
+    criterion = criterion.to(device).train()
+
+    teacher = VideoFrozenRFDETRTeacher(cfg).to(device).eval()
+    model.register_teacher_queries(
+        teacher.refpoint_embed_weight, teacher.query_feat_weight,
+    )
+    crrcd_module = CRRCDLoss(
+        hidden_dim=int(teacher.hidden_dim),
+        relation_dim=int(cfg.crrcd_relation_dim),
+        frm_hidden_dim=int(cfg.crrcd_hidden_dim),
+        num_fg=int(cfg.crrcd_num_fg),
+        num_bg=int(cfg.crrcd_num_bg),
+        num_negatives=int(cfg.crrcd_num_negatives),
+        temperature=float(cfg.crrcd_temperature),
+    ).to(device)
+    model.crrcd = crrcd_module
+
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    teacher_frames = torch.randn(
+        B, T, 3, cfg.distill_teacher_resolution,
+        cfg.distill_teacher_resolution, device=device,
+    )
+    targets_list = [[
+        {"boxes": torch.tensor([[0.5, 0.5, 0.2, 0.2]], device=device),
+         "labels": torch.tensor([0], device=device)}
+        for _ in range(T)
+    ]]
+    targets_flat = _flatten_targets(targets_list, device, cfg.img_size)
+
+    # ── Branch 1 — student detection ─────────────────────────────────
+    out = model(frames, query_mode="student")
+    pred_flat = _flatten_predictions(out, B, T)
+    loss_dict = criterion(pred_flat, targets_flat)
+    loss = sum(
+        loss_dict[k] * criterion.weight_dict[k]
+        for k in loss_dict if k in criterion.weight_dict
+    )
+    loss = loss + cfg.consistency_weight * num_consistency_loss(
+        out["pred_logits"],
+        cfg.consistency_threshold,
+        cfg.consistency_soft_temp,
+    )
+
+    # ── Branch 2 — KD-specific + CRRCD ───────────────────────────────
+    with torch.no_grad():
+        t_out = teacher.forward_video(teacher_frames)
+    s_kd_spec = model(
+        frames,
+        query_mode="teacher",
+        decoder_inputs={
+            "tgt": t_out["decoder_tgt"],
+            "refpoints": t_out["decoder_refpoints"],
+        },
+    )
+    student_hs_spec = model._captured_decoder_hs
+    assert student_hs_spec is not None, "student decoder hs must be captured"
+    distill_spec = distillation_loss(s_kd_spec, t_out, cfg)
+    loss = loss + cfg.distill_loss_weight * distill_spec["loss_distill"]
+    loss_rcd = crrcd_module(
+        teacher_hs=t_out["decoder_hs"],
+        student_hs=student_hs_spec,
+        weights=t_out["foreground_weight"],
+    )
+    loss = loss + cfg.crrcd_loss_weight * loss_rcd
+
+    # ── Branch 3 — KD-general ────────────────────────────────────────
+    gen_q = model.sample_general_queries(
+        cfg.distill_num_general_queries, device=device, dtype=frames.dtype,
+    )
+    with torch.no_grad():
+        t_out_gen = teacher.forward_video_general(
+            teacher_frames,
+            gen_q["refpoint"], gen_q["query_feat"],
+            min_weight=cfg.distill_general_min_weight,
+        )
+    s_kd_gen = model(
+        frames,
+        query_mode="general",
+        general_queries=gen_q,
+        decoder_inputs={
+            "tgt": t_out_gen["decoder_tgt"],
+            "refpoints": t_out_gen["decoder_refpoints"],
+        },
+    )
+    distill_gen = distillation_loss(s_kd_gen, t_out_gen, cfg)
+    loss = loss + (
+        cfg.distill_loss_weight * cfg.distill_general_loss_weight
+        * distill_gen["loss_distill"]
+    )
+
+    assert torch.isfinite(loss), f"loss is not finite: {loss.item()}"
+    loss.backward()
+
+    # Refine layer must receive gradient from Branch 1.
+    refine_grads = [
+        p.grad for p in model.refine_layer.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in refine_grads), \
+        "refinement layer must receive gradient"
+
+    # ETF must receive gradient (in *some* branch — typically all three).
+    etf_grads = [p.grad for p in model.etf.parameters() if p.grad is not None]
+    assert any(g.abs().sum().item() > 0 for g in etf_grads), \
+        "ETF must receive gradient via KD/det branches"
+
+    # CRRCD relation MLPs must receive gradient.
+    crrcd_grads = [
+        p.grad for p in crrcd_module.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in crrcd_grads), \
+        "CRRCD relation MLPs must receive gradient"
+
+    # Teacher params must remain ungrad'd.
+    for n, p in teacher.named_parameters():
+        assert p.grad is None, f"teacher param '{n}' received gradient"

@@ -1,0 +1,31 @@
+STFS Ablation Tests – stfs_crrcd_v6_etf
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/stfs_crrcd_v6_etf
+Base STFS params: iou_gate=0.1  score_thresh=0.3  iou_w=2.0  l1_w=5.0  cls_w=2.0
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1614 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.3683  AP50=0.1758  AP75=0.0040  AP5095=0.0422  F1=0.2258  Frag=0.31  FragRate=0.0181
+  MICRO (pooled)      AP30=0.2339  AP50=0.0527  AP75=0.0005  AP5095=0.0105  F1=0.1614  P=0.1733  R=0.1511  thr=0.1600  Frag=49  FragRate=0.0215
+  Dataset : dataset2_split_test  (31 videos, 1128 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5630  AP50=0.4113  AP75=0.0527  AP5095=0.1317  F1=0.4436  Frag=1.90  FragRate=0.0495
+  MICRO (pooled)      AP30=0.4754  AP50=0.2595  AP75=0.0077  AP5095=0.0633  F1=0.3705  P=0.5133  R=0.2899  thr=0.5300  Frag=59  FragRate=0.0523
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.2339  0.0527  0.0005  0.1614  0.1733  0.1511     49   0.0215
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.4754  0.2595  0.0077  0.3705  0.5133  0.2899     59   0.0523
