@@ -292,6 +292,10 @@ class VideoRFDETR(nn.Module):
         # Post-refinement hidden state capture (E1 — CRRCD on the
         # tensor that actually feeds the inference heads).
         self._captured_refined_hs: Optional[torch.Tensor] = None
+        # STFS feature-alignment capture: enriched embeddings produced by
+        # inject_features plus a mask of slots modified by STFS.
+        self._captured_stfs_hs: Optional[torch.Tensor] = None
+        self._captured_stfs_mask: Optional[torch.Tensor] = None
 
         def _capture_hs_post_hook(_m, _a, _kw, output):
             if isinstance(output, (list, tuple)) and len(output) >= 1:
@@ -516,6 +520,8 @@ class VideoRFDETR(nn.Module):
         # Reset captures.
         self._captured_decoder_hs = None
         self._captured_refined_hs = None
+        self._captured_stfs_hs = None
+        self._captured_stfs_mask = None
         self._captured_cross_inputs = {}
 
         # ── 1. Backbone on B*T frames ────────────────────────────────
@@ -665,6 +671,11 @@ class VideoRFDETR(nn.Module):
             alpha=self.cfg.stfs_inject_alpha,
             aggregator=self.stfs_aggregator,
             shifter=self.stfs_shifter,
+        )
+        self._captured_stfs_hs = enriched_emb
+        self._captured_stfs_mask = (
+            (enriched_emb.detach() - query_embed_btq.detach()).abs().sum(dim=-1)
+            > 1e-6
         )
 
         # ── 7. Refinement pass on enriched queries ───────────────────

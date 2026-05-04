@@ -88,6 +88,13 @@ class Config:
     # so the 2D teacher does not penalise temporal-only detections that
     # the video model is designed to make on H-FN frames.
     distill_centre_frame_only: bool = False
+    # Teacher-guided STFS feature alignment: Branch 1 aligns injected
+    # STFS embeddings against teacher decoder_hs without assuming slot
+    # identity. This regularises FeatureAggregator outputs before the
+    # refinement layer sees them.
+    stfs_feature_align_enabled: bool = False
+    stfs_feature_align_weight: float = 0.1
+    stfs_feature_align_teacher_topk: int = 16
 
     # ── CRRCD: per-frame relational contrastive distillation ──────────
     crrcd_enabled: bool = False

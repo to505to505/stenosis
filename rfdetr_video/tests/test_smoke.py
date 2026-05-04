@@ -211,6 +211,10 @@ def test_forward_shapes():
     assert out["pred_boxes"].shape == (B, T, Q, 4)
     assert "first_pass" in out
     assert out["first_pass"]["pred_logits"].shape[:3] == (B, T, Q)
+    assert model._captured_stfs_hs is not None
+    assert model._captured_stfs_hs.shape[:3] == (B, T, Q)
+    assert model._captured_stfs_mask is not None
+    assert model._captured_stfs_mask.shape == (B, T, Q)
 
 
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
@@ -269,6 +273,32 @@ def test_crrcd_per_frame():
     assert teacher_hs.grad is None
 
 
+def test_stfs_feature_alignment_loss_masked_topk():
+    """STFS feature alignment uses selected slots and teacher top-k only."""
+    from rfdetr_video.distill import stfs_feature_alignment_loss
+
+    B, T, Q, Qt, D = 1, 2, 4, 6, 16
+    student_hs = torch.randn(B, T, Q, D, requires_grad=True)
+    teacher_hs = torch.randn(B * T, Qt, D)
+    teacher_weights = torch.zeros(B * T, Qt)
+    teacher_weights[:, :2] = 1.0
+    stfs_mask = torch.zeros(B, T, Q, dtype=torch.bool)
+    stfs_mask[:, :, 1] = True
+
+    loss = stfs_feature_alignment_loss(
+        student_hs,
+        teacher_hs,
+        stfs_mask=stfs_mask,
+        teacher_weights=teacher_weights,
+        teacher_topk=2,
+    )
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert student_hs.grad is not None
+    assert student_hs.grad[:, :, 1].abs().sum().item() > 0
+    assert student_hs.grad[:, :, 0].abs().sum().item() == 0
+
+
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
 def test_distill_one_step():
     """End-to-end one training step exercising the three KD branches.
@@ -291,6 +321,7 @@ def test_distill_one_step():
         VideoFrozenRFDETRTeacher,
         distillation_loss,
         CRRCDLoss,
+        stfs_feature_alignment_loss,
     )
     from rfdetr_video.train import _flatten_targets, _flatten_predictions
 
@@ -309,6 +340,12 @@ def test_distill_one_step():
         consistency_enabled=True,
         etf_enabled=True,
         wandb_enabled=False,
+        stfs_feature_align_enabled=True,
+        stfs_feature_align_weight=0.1,
+        stfs_feature_align_teacher_topk=8,
+        stfs_track_score_thresh=0.0,
+        stfs_match_iou_thresh=1.1,
+        stfs_min_track_len=1,
     )
 
     model = VideoRFDETR(cfg).to(device).train()
@@ -356,10 +393,23 @@ def test_distill_one_step():
         cfg.consistency_threshold,
         cfg.consistency_soft_temp,
     )
+    stfs_hs = model._captured_stfs_hs
+    stfs_mask = model._captured_stfs_mask
+    assert stfs_hs is not None
+    assert stfs_mask is not None and stfs_mask.any(), \
+        "forced STFS settings should create injected slots"
 
     # ── Branch 2 — KD-specific + CRRCD ───────────────────────────────
     with torch.no_grad():
         t_out = teacher.forward_video(teacher_frames)
+    loss_stfs_align = stfs_feature_alignment_loss(
+        stfs_hs,
+        t_out["decoder_hs"],
+        stfs_mask=stfs_mask,
+        teacher_weights=t_out["foreground_weight"],
+        teacher_topk=cfg.stfs_feature_align_teacher_topk,
+    )
+    loss = loss + cfg.stfs_feature_align_weight * loss_stfs_align
     s_kd_spec = model(
         frames,
         query_mode="teacher",
@@ -418,6 +468,14 @@ def test_distill_one_step():
     etf_grads = [p.grad for p in model.etf.parameters() if p.grad is not None]
     assert any(g.abs().sum().item() > 0 for g in etf_grads), \
         "ETF must receive gradient via KD/det branches"
+
+    # FeatureAggregator should receive gradient through Branch-1 STFS
+    # feature alignment and detection refinement.
+    agg_grads = [
+        p.grad for p in model.stfs_aggregator.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in agg_grads), \
+        "FeatureAggregator must receive gradient with STFS alignment enabled"
 
     # CRRCD relation MLPs must receive gradient.
     crrcd_grads = [

@@ -33,7 +33,12 @@ from .dataset import get_video_dataloader
 from .model import VideoRFDETR, build_criterion
 from .evaluate import evaluate
 from .consistency import num_consistency_loss
-from .distill import VideoFrozenRFDETRTeacher, distillation_loss, CRRCDLoss
+from .distill import (
+    VideoFrozenRFDETRTeacher,
+    distillation_loss,
+    CRRCDLoss,
+    stfs_feature_alignment_loss,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -166,7 +171,9 @@ def train(cfg: Config):
     if cfg.distill_enabled:
         print(
             f"[KD] distill_through_refine={cfg.distill_through_refine} "
-            f"distill_centre_frame_only={cfg.distill_centre_frame_only}"
+            f"distill_centre_frame_only={cfg.distill_centre_frame_only} "
+            f"stfs_feature_align={cfg.stfs_feature_align_enabled} "
+            f"stfs_feature_align_weight={cfg.stfs_feature_align_weight}"
         )
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -246,6 +253,9 @@ def train(cfg: Config):
                     loss = loss + cfg.consistency_weight * loss_num
                     loss_dict["loss_num"] = loss_num.detach()
 
+                stfs_hs = model._captured_stfs_hs
+                stfs_mask = model._captured_stfs_mask
+
                 # ── Branch 2: CRRCD + KD specific (per-frame) ─────
                 if cfg.distill_enabled:
                     # E2: optionally restrict KD/CRRCD to the centre frame
@@ -260,6 +270,29 @@ def train(cfg: Config):
                         kd_teacher_frames = teacher_frames
                     with torch.no_grad():
                         t_out = teacher.forward_video(kd_teacher_frames)
+                    if (
+                        cfg.stfs_feature_align_enabled
+                        and stfs_hs is not None
+                        and "decoder_hs" in t_out
+                    ):
+                        if cfg.distill_centre_frame_only:
+                            align_student_hs = stfs_hs[:, c:c + 1]
+                            align_mask = (
+                                stfs_mask[:, c:c + 1]
+                                if stfs_mask is not None else None
+                            )
+                        else:
+                            align_student_hs = stfs_hs
+                            align_mask = stfs_mask
+                        loss_stfs_align = stfs_feature_alignment_loss(
+                            align_student_hs,
+                            t_out["decoder_hs"],
+                            stfs_mask=align_mask,
+                            teacher_weights=t_out.get("foreground_weight"),
+                            teacher_topk=int(cfg.stfs_feature_align_teacher_topk),
+                        )
+                        loss = loss + cfg.stfs_feature_align_weight * loss_stfs_align
+                        loss_dict["loss_stfs_align"] = loss_stfs_align.detach()
                     student_kd_spec = model(
                         kd_images,
                         query_mode="teacher",
@@ -489,6 +522,11 @@ def parse_args():
     p.add_argument("--distill-centre-frame-only", action="store_true",
                    help="E2: restrict KD/CRRCD branches to the centre frame "
                         "of each window (T_kd=1).")
+    p.add_argument("--stfs-feature-align", action="store_true",
+                   help="Align Branch-1 STFS-injected embeddings to the "
+                        "teacher decoder feature space (nearest-cosine).")
+    p.add_argument("--stfs-feature-align-weight", type=float, default=None)
+    p.add_argument("--stfs-feature-align-teacher-topk", type=int, default=None)
 
     # STFS knobs
     p.add_argument("--stfs-iou-weight", type=float, default=None)
@@ -570,6 +608,15 @@ if __name__ == "__main__":
         cfg_kwargs["distill_through_refine"] = True
     if args.distill_centre_frame_only:
         cfg_kwargs["distill_centre_frame_only"] = True
+    if args.stfs_feature_align:
+        cfg_kwargs["stfs_feature_align_enabled"] = True
+    _maybe(cfg_kwargs, "stfs_feature_align_weight", args.stfs_feature_align_weight, float)
+    _maybe(
+        cfg_kwargs,
+        "stfs_feature_align_teacher_topk",
+        args.stfs_feature_align_teacher_topk,
+        int,
+    )
     _maybe(cfg_kwargs, "crrcd_loss_weight", args.crrcd_weight, float)
     _maybe(cfg_kwargs, "crrcd_num_fg", args.crrcd_num_fg, int)
     _maybe(cfg_kwargs, "crrcd_num_bg", args.crrcd_num_bg, int)

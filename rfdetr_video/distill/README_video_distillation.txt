@@ -25,6 +25,8 @@ match the student's geometric augmentations):
     RefPointShift on previous-frame refpoints) → refinement.
     Losses: criterion(pred, targets) (cls + box + giou)
             + λ_num · L_num (multi-frame count consistency)
+            + λ_stfs_align · L_stfs_align (optional teacher
+              feature-space alignment on STFS-injected embeddings)
 
   Branch 2 — KD specific + CRRCD (per-frame or centre-frame)
     If distill_centre_frame_only (E2): slice kd_images and
@@ -113,6 +115,37 @@ slice both `images` and `teacher_frames` to the centre frame
 (c = T//2, T_kd = 1) before any teacher or student call.
 Branch 1 (detection) still sees the full T-frame window.
 
+E3 — STFS feature alignment (stfs_feature_align_enabled=True)
+-------------------------------------------------------------
+Problem: E1 makes KD supervise the refinement layer, but KD
+branches still bypass STFS to preserve teacher query-slot
+alignment. Therefore the refinement layer sees two feature
+distributions during training: clean per-frame `hs[-1]` in KD
+branches, and STFS-enriched embeddings in Branch 1 / inference.
+The KD-heavy signal can make refinement overfit to the clean
+single-frame distribution, while FeatureAggregator receives no
+direct teacher-space regularisation.
+
+Fix: Branch 1 captures `model._captured_stfs_hs` immediately
+after `inject_features(...)` and before `_refinement_pass(...)`.
+It also captures `model._captured_stfs_mask`, a boolean mask of
+slots whose embedding changed due to STFS injection. When
+`stfs_feature_align_enabled=True`, Branch 1 adds:
+
+  L_stfs_align = mean(1 - max_cos(student_stfs_slot,
+                  teacher_decoder_slot))
+
+Only STFS-modified slots contribute. The teacher pool is the
+top-k foreground teacher decoder slots per frame (from
+`foreground_weight`) so background queries do not dominate. This
+avoids assuming 1:1 query-slot identity while still keeping STFS
+outputs geometrically close to the teacher's robust decoder
+feature space.
+
+If `distill_centre_frame_only=True`, this loss is also computed
+only on the centre frame and reuses the same KD-specific teacher
+forward, preserving the low-VRAM centre-frame KD path.
+
 Components
 ----------
 rfdetr_video/distill/teacher.py
@@ -148,6 +181,9 @@ rfdetr_video/model.py — VideoRFDETR additions:
         immediately after refine_norm): post-refinement
         hidden states; used by CRRCD when
         distill_through_refine=True (E1).
+    - _captured_stfs_hs and _captured_stfs_mask (captured after
+      inject_features): STFS-enriched embeddings and the mask
+      of modified slots used by L_stfs_align (E3).
   - _captured_cross_inputs (forward_pre_hook on
         decoder.layers[-1]): reserved for future losses.
   - In `forward(...)`: KD branches early-return after the
@@ -174,15 +210,19 @@ rfdetr_video/train.py
     decoder lr=1e-4).
   - Optimizer is built *after* this assignment.
   - Prints `[KD] distill_through_refine=... 
-    distill_centre_frame_only=...` at startup.
+    distill_centre_frame_only=... stfs_feature_align=...
+    stfs_feature_align_weight=...` at startup.
   - Argparse flags: --distill-through-refine (E1),
-    --distill-centre-frame-only (E2).
+    --distill-centre-frame-only (E2), --stfs-feature-align,
+    --stfs-feature-align-weight, --stfs-feature-align-teacher-topk.
   - Per-step loss: see Branches 1–3 above. Centre-frame
     slicing (E2) applied before teacher/student calls in
     Branches 2+3. CRRCD student_hs source switches to
-    model._captured_refined_hs when E1 active. Single
-    backward() over the summed loss (one optimizer step
-    per `grad_accum_steps`).
+    model._captured_refined_hs when E1 active. STFS feature
+    alignment (E3) is added after the KD-specific teacher forward
+    and before the KD-specific student forward resets model
+    captures. Single backward() over the summed loss (one
+    optimizer step per `grad_accum_steps`).
 
 CRRCD loss details (inherited unchanged from rfdetr_temporal)
 -------------------------------------------------------------
@@ -215,6 +255,16 @@ Hyper-parameters used for `stfs_crrcd_v6_etf_postref_centreKD`
     distill_centre_frame_only=True  (E2)
   Both flags activate together; either can be used alone.
 
+Optional STFS feature alignment add-on
+--------------------------------------
+  Add:
+    --stfs-feature-align
+    --stfs-feature-align-weight 0.1
+    --stfs-feature-align-teacher-topk 16
+
+  Recommended run-name suffix:
+    stfs_crrcd_v6_etf_postref_centreKD_stfsAlign
+
 What does NOT receive grads
 ---------------------------
   - All teacher params: requires_grad=False, frozen in
@@ -239,3 +289,12 @@ rfdetr_video/tests/test_smoke.py::
   - CRRCD MLPs receive grad.
   - teacher params have .grad is None.
   - E1+E2 variant: pred_logits.shape[0] == B*1 (T_kd=1).
+
+rfdetr_video/tests/test_smoke.py::test_stfs_feature_alignment_loss_masked_topk
+validates the pure feature-alignment loss: only masked STFS slots
+receive gradient and teacher matching is restricted to top-k
+foreground teacher slots.
+
+rfdetr_video/tests/test_smoke.py::test_forward_shapes now also
+asserts that a student forward captures `_captured_stfs_hs` and
+`_captured_stfs_mask` with shape (B,T,Q,*).
