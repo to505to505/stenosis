@@ -531,9 +531,15 @@ class VideoRFDETR(nn.Module):
                 out = out.clone()
                 outputs_class = outputs_class.clone()
                 outputs_coord = outputs_coord.clone()
-                out[mask_flat] = (selected_out * cand_weight).sum(dim=1)
-                outputs_class[mask_flat] = (cand_class * cand_weight).sum(dim=1)
-                outputs_coord[mask_flat] = (cand_coord * cand_weight).sum(dim=1)
+                out[mask_flat] = (
+                    selected_out * cand_weight.to(dtype=selected_out.dtype)
+                ).sum(dim=1).to(dtype=out.dtype)
+                outputs_class[mask_flat] = (
+                    cand_class * cand_weight.to(dtype=cand_class.dtype)
+                ).sum(dim=1).to(dtype=outputs_class.dtype)
+                outputs_coord[mask_flat] = (
+                    cand_coord * cand_weight.to(dtype=cand_coord.dtype)
+                ).sum(dim=1).to(dtype=outputs_coord.dtype)
 
         # Capture post-refinement hidden state so CRRCD can hook the exact
         # tensor consumed by the inference heads (E1), including candidate

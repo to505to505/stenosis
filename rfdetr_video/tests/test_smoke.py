@@ -238,6 +238,32 @@ def test_forward_shapes():
 
 
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="AMP path requires CUDA")
+def test_forward_sparse_refinement_amp_dtype():
+    """AMP student forward must not fail assigning 5-point candidates."""
+    from rfdetr_video.model import VideoRFDETR
+
+    cfg = Config(
+        batch_size=1,
+        T=3,
+        img_size=384,
+        distill_enabled=False,
+        consistency_enabled=False,
+        stfs_track_score_thresh=0.0,
+        stfs_match_iou_thresh=1.1,
+        stfs_min_track_len=1,
+    )
+    device = torch.device("cuda")
+    model = VideoRFDETR(cfg).to(device).train()
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    with torch.cuda.amp.autocast(enabled=True):
+        out = model(frames, query_mode="student")
+    assert torch.isfinite(out["pred_logits"]).all()
+    assert model._captured_stfs_mask is not None and model._captured_stfs_mask.any()
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
 def test_one_training_step():
     """Single forward + backward — refinement params receive gradient."""
     from rfdetr_video.model import VideoRFDETR, build_criterion
