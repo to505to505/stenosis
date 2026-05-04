@@ -242,11 +242,11 @@ class VideoRFDETR(nn.Module):
         else:
             self.etf = None
 
-        # ── STFS soft aggregator + proposal-shift refpoint compensator ──
-        # Replaces the original hard torch.where injection. Both modules
-        # are zero-initialised on their last linear so the initial
-        # behaviour ≈ the legacy hard copy (FeatureAggregator → identity
-        # on weak embedding; RefPointShift → α-padded source refpoint).
+        # ── STFS soft aggregator + proposal-shift refpoint grid ────────
+        # Replaces the original hard torch.where injection. FeatureAggregator
+        # is zero-init on its attention out_proj. RefPointShift is now a
+        # deterministic 5-point grid (centre/up/down/left/right), not a
+        # blind MLP offset regressor.
         if cfg.stfs_aggregator_enabled:
             self.stfs_aggregator: Optional[FeatureAggregator] = FeatureAggregator(
                 d_model=cfg.hidden_dim,
@@ -422,6 +422,8 @@ class VideoRFDETR(nn.Module):
         self,
         query_embed: torch.Tensor,        # (B, T, Q, D)
         refpoints_unsigmoid: torch.Tensor,  # (B, T, Q, 4)
+        candidate_refpoints_unsigmoid: Optional[torch.Tensor] = None,  # (B,T,Q,5,4)
+        candidate_mask: Optional[torch.Tensor] = None,  # (B,T,Q)
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Run a single deformable-decoder layer over per-frame memory."""
         cap = self._captured_cross_inputs
@@ -478,11 +480,65 @@ class VideoRFDETR(nn.Module):
             level_start_index=level_start_index,
         )
         out = self.refine_norm(out)              # (BT, Q, D)
-        # Capture post-refinement hidden state so CRRCD can hook the
-        # exact tensor consumed by the inference heads (E1).
-        self._captured_refined_hs = out
-        # Apply heads on refined embeddings; reuse refpoint reparam math.
         outputs_class, outputs_coord = self._heads(out, obj_center)
+
+        # Proposal-shifted sparse refinement: for STFS-injected slots only,
+        # run deformable cross-attention over five explicit spatial hypotheses
+        # (centre/up/down/left/right), then softly collapse by foreground
+        # confidence. This replaces blind Δcxcywh regression with visual
+        # evidence from the refinement layer itself.
+        if candidate_refpoints_unsigmoid is not None and candidate_mask is not None:
+            mask_flat = candidate_mask.reshape(BT, Q).to(device=memory.device, dtype=torch.bool)
+            if mask_flat.any():
+                candidate_obj = candidate_refpoints_unsigmoid.reshape(BT, Q, 5, 4)
+                candidate_obj = candidate_obj.to(device=memory.device, dtype=memory.dtype)
+                if not self.bbox_reparam:
+                    candidate_obj = candidate_obj.sigmoid()
+
+                bt_idx = mask_flat.nonzero(as_tuple=False)[:, 0]
+                selected_tgt = tgt[mask_flat].unsqueeze(1).expand(-1, 5, -1).contiguous()
+                selected_refs = candidate_obj[mask_flat]
+                selected_memory = memory.index_select(0, bt_idx)
+                if memory_key_padding_mask is not None:
+                    selected_padding = memory_key_padding_mask.index_select(0, bt_idx)
+                else:
+                    selected_padding = None
+                selected_ratios = valid_ratios.index_select(0, bt_idx)
+                selected_refpoints_input = (
+                    selected_refs[:, :, None]
+                    * torch.cat([selected_ratios, selected_ratios], -1)[:, None]
+                )
+                selected_sine = gen_sineembed_for_position(
+                    selected_refpoints_input[:, :, 0, :], self.transformer.d_model / 2,
+                )
+                selected_query_pos = self.refine_ref_point_head(selected_sine)
+                selected_out = self.refine_layer(
+                    selected_tgt,
+                    selected_memory,
+                    memory_key_padding_mask=selected_padding,
+                    query_pos=selected_query_pos,
+                    query_sine_embed=selected_sine,
+                    is_first=False,
+                    reference_points=selected_refpoints_input,
+                    spatial_shapes=spatial_shapes,
+                    level_start_index=level_start_index,
+                )
+                selected_out = self.refine_norm(selected_out)  # (N, 5, D)
+                cand_class, cand_coord = self._heads(selected_out, selected_refs)
+                cand_score = cand_class.sigmoid().amax(dim=-1)
+                cand_weight = torch.softmax(cand_score / 0.1, dim=1).unsqueeze(-1)
+
+                out = out.clone()
+                outputs_class = outputs_class.clone()
+                outputs_coord = outputs_coord.clone()
+                out[mask_flat] = (selected_out * cand_weight).sum(dim=1)
+                outputs_class[mask_flat] = (cand_class * cand_weight).sum(dim=1)
+                outputs_coord[mask_flat] = (cand_coord * cand_weight).sum(dim=1)
+
+        # Capture post-refinement hidden state so CRRCD can hook the exact
+        # tensor consumed by the inference heads (E1), including candidate
+        # replacements for STFS-injected slots.
+        self._captured_refined_hs = out
         # Reshape back to (B, T, Q, *).
         outputs_class = outputs_class.reshape(B, T, Q, -1)
         outputs_coord = outputs_coord.reshape(B, T, Q, 4)
@@ -666,21 +722,21 @@ class VideoRFDETR(nn.Module):
 
         query_embed_btq = hs[-1].reshape(B, T, Q, D)        # gradient through decoder
         refpoint_btq = ref_unsigmoid.reshape(B, T, Q, 4)
-        enriched_emb, enriched_ref = inject_features(
+        enriched_emb, enriched_ref, shift_candidates, inject_mask = inject_features(
             query_embed_btq, refpoint_btq, tracks,
             alpha=self.cfg.stfs_inject_alpha,
             aggregator=self.stfs_aggregator,
             shifter=self.stfs_shifter,
+            return_shift_candidates=True,
         )
         self._captured_stfs_hs = enriched_emb
-        self._captured_stfs_mask = (
-            (enriched_emb.detach() - query_embed_btq.detach()).abs().sum(dim=-1)
-            > 1e-6
-        )
+        self._captured_stfs_mask = inject_mask
 
         # ── 7. Refinement pass on enriched queries ───────────────────
         outputs_class_btq, outputs_coord_btq = self._refinement_pass(
             enriched_emb, enriched_ref,
+            candidate_refpoints_unsigmoid=shift_candidates,
+            candidate_mask=self._captured_stfs_mask,
         )
 
         out = {

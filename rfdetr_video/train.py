@@ -541,12 +541,14 @@ def parse_args():
                    help="Disable FeatureAggregator; revert to hard torch.where blend.")
     p.add_argument("--stfs-aggregator-heads", type=int, default=None)
     p.add_argument("--stfs-aggregator-dropout", type=float, default=None)
-    # Proposal-shift refpoint compensator
+    # Proposal-shift refpoint grid
     p.add_argument("--no-stfs-shifter", action="store_true",
-                   help="Disable RefPointShift; revert to direct source refpoint copy.")
+                   help="Disable 5-point proposal-shift grid; revert to "
+                        "direct source refpoint copy.")
     p.add_argument("--stfs-shifter-padding-alpha", type=float, default=None,
-                   help="wh expansion factor (default 1.5, STQD-Det uses 2.0).")
-    p.add_argument("--stfs-shifter-hidden-dim", type=int, default=None)
+                   help="5-point grid wh expansion factor (default 1.5).")
+    p.add_argument("--stfs-shifter-hidden-dim", type=int, default=None,
+                   help="Deprecated; ignored by deterministic RefPointShift.")
 
     # Consistency
     p.add_argument("--consistency-weight", type=float, default=None)

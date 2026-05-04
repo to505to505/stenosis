@@ -18,14 +18,13 @@ Workflow on a window of T frames after the first decoder pass:
            embedding). This avoids the geometry-breaking hard copy of
            ``torch.where`` and is analogous to the RoI Aggregator in
            STQD-Det / SFF in Stenosis-DetNet.
-         * reference points are taken from the strong source frame, the
-           wh is multiplied by a padding coefficient ``α`` (PSSTT-style
-           local search window) and a learnable :class:`RefPointShift`
-           predicts a small (Δcx, Δcy, Δw, Δh) offset to compensate for
-           cardiac / breathing motion of the vessel.
-       Both modules are zero-initialised on their last linear so the
-       initial behaviour ≈ the previous hard-copy injection (drift of
-       refpoint = 0, embedding residual = 0), keeping warm-init safe.
+                 * reference points are taken from the strong source frame and a
+                     deterministic :class:`RefPointShift` builds a 5-point proposal
+                     grid (centre/up/down/left/right). The refinement layer samples
+                     visual features at these explicit hypotheses instead of asking
+                     an MLP to blindly regress an exact geometric offset.
+             The aggregator is zero-initialised on its attention output projection;
+             RefPointShift itself has no trainable parameters.
 """
 
 from __future__ import annotations
@@ -211,21 +210,20 @@ class FeatureAggregator(nn.Module):
 
 
 class RefPointShift(nn.Module):
-    """Proposal-Shift refpoint compensator (PSSTT-style local window).
+    """Deterministic proposal-shift grid for STFS H-FN refpoints.
 
-    Predicts a small offset ``(Δcx, Δcy, Δw, Δh)`` added on top of a
-    fixed padding-coefficient expansion of the source refpoint's wh:
+    The previous implementation used an MLP to regress ``Δcxcywh`` from
+    query embeddings alone. That is geometrically blind: the module has no
+    access to local pixels while deciding where the artery moved. This class
+    instead returns five explicit hypotheses around the source refpoint:
 
-        cxcy_out = src_cxcy + Δcxcy
-        wh_out   = src_wh * padding_alpha + Δwh
+        centre, up, down, left, right
 
-    The MLP head is zero-initialised so the initial behaviour is a
-    deterministic α-padded copy of ``src_ref`` (matching the STQD-Det
-    α=2 padding coefficient) while leaving room for the network to
-    learn frame-to-frame motion compensation.
-
-    Designed for ``bbox_reparam=True`` refpoints (positive cxcywh in
-    image coordinates), which is the RF-DETR Small default.
+    Each hypothesis uses the source wh expanded by ``padding_alpha``. The
+    refinement layer then runs deformable cross-attention on these candidate
+    boxes, grounding the choice in visual features. ``hidden_dim`` is kept in
+    the constructor for checkpoint / CLI compatibility but is intentionally
+    unused.
     """
 
     def __init__(
@@ -235,15 +233,8 @@ class RefPointShift(nn.Module):
         padding_alpha: float = 1.5,
     ):
         super().__init__()
-        h = hidden_dim if hidden_dim is not None else d_model
         self.padding_alpha = float(padding_alpha)
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * d_model + 4, h),
-            nn.ReLU(inplace=True),
-            nn.Linear(h, 4),
-        )
-        nn.init.zeros_(self.mlp[-1].weight)
-        nn.init.zeros_(self.mlp[-1].bias)
+        _ = d_model, hidden_dim
 
     def forward(
         self,
@@ -251,16 +242,23 @@ class RefPointShift(nn.Module):
         src_emb: torch.Tensor,        # (N, D)  strong source embedding
         src_ref: torch.Tensor,        # (N, 4)  cxcywh refpoint of source
     ) -> torch.Tensor:
+        """Return candidate refpoints with shape ``(N, 5, 4)``."""
         if cur_emb.numel() == 0:
-            return src_ref
-        h = torch.cat([cur_emb, src_emb, src_ref], dim=-1)
-        delta = self.mlp(h)                              # (N, 4)
-        cxcy = src_ref[..., :2] + delta[..., :2]
-        wh = src_ref[..., 2:] * self.padding_alpha + delta[..., 2:]
-        # Clamp wh to be strictly positive so downstream sin-embed /
-        # bbox-reparam math stays well-defined.
-        wh = wh.clamp(min=1e-6)
-        return torch.cat([cxcy, wh], dim=-1)
+            return src_ref.new_zeros((0, 5, 4))
+        _ = cur_emb, src_emb
+        wh = (src_ref[..., 2:] * self.padding_alpha).clamp(min=1e-6)
+        cxcy = src_ref[..., :2]
+        half_step = 0.5 * wh
+        offsets = torch.stack([
+            torch.zeros_like(cxcy),
+            torch.stack([torch.zeros_like(half_step[..., 0]), -half_step[..., 1]], dim=-1),
+            torch.stack([torch.zeros_like(half_step[..., 0]), half_step[..., 1]], dim=-1),
+            torch.stack([-half_step[..., 0], torch.zeros_like(half_step[..., 1])], dim=-1),
+            torch.stack([half_step[..., 0], torch.zeros_like(half_step[..., 1])], dim=-1),
+        ], dim=1)
+        candidate_cxcy = (cxcy.unsqueeze(1) + offsets).clamp(0.0, 1.0)
+        candidate_wh = wh.unsqueeze(1).expand(-1, 5, -1)
+        return torch.cat([candidate_cxcy, candidate_wh], dim=-1)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -274,7 +272,10 @@ def inject_features(
     alpha: float,
     aggregator: Optional[FeatureAggregator] = None,
     shifter: Optional[RefPointShift] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    return_shift_candidates: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor] | tuple[
+    torch.Tensor, torch.Tensor, Optional[torch.Tensor], torch.Tensor,
+]:
     """Build refined ``(query_embed, refpoint)`` for the refinement pass.
 
     For H-FN slots the embedding and refpoint are taken from the
@@ -283,10 +284,11 @@ def inject_features(
       * If ``aggregator`` is provided → the H-FN embedding is replaced by
         ``FeatureAggregator(weak, strong)`` (soft mix via cross-attention).
         Otherwise the legacy α-blend ``(1-α)·weak + α·strong`` is used.
-      * If ``shifter`` is provided → the refpoint is replaced by
-        ``RefPointShift(weak_emb, strong_emb, strong_ref)`` (α-padded
-        source refpoint plus learnable Δcxcywh). Otherwise the strong
-        source refpoint is copied as-is.
+            * If ``shifter`` is provided → a 5-point proposal grid is generated
+                around the strong source refpoint. The centre candidate is used as
+                the default refpoint and the full grid can be returned for sparse
+                candidate refinement. Otherwise the strong source refpoint is copied
+                as-is.
 
     Non-H-FN slots are returned unchanged.
     """
@@ -352,8 +354,11 @@ def inject_features(
         )
 
     # ── Reference-point path ────────────────────────────────────────
+    shift_candidates: Optional[torch.Tensor] = None
     if shifter is not None:
         flat_mask = inject_mask.reshape(-1)
+        if return_shift_candidates:
+            shift_candidates = refpoint.unsqueeze(-2).expand(-1, -1, -1, 5, -1).clone()
         if flat_mask.any():
             flat_q = query_embed.reshape(-1, D)
             flat_s_emb = src_emb.reshape(-1, D)
@@ -362,10 +367,12 @@ def inject_features(
             cur_sel = flat_q[flat_mask]
             src_emb_sel = flat_s_emb[flat_mask]
             src_box_sel = flat_s_box[flat_mask]
-            shifted = shifter(cur_sel, src_emb_sel, src_box_sel)   # (N, 4)
+            candidates = shifter(cur_sel, src_emb_sel, src_box_sel)  # (N, 5, 4)
             new_box_flat = flat_box_in.clone()
-            new_box_flat[flat_mask] = shifted
+            new_box_flat[flat_mask] = candidates[:, 0]
             new_box = new_box_flat.reshape(B, T, Q, 4)
+            if shift_candidates is not None:
+                shift_candidates.reshape(-1, 5, 4)[flat_mask] = candidates
         else:
             new_box = refpoint
     else:
@@ -375,4 +382,6 @@ def inject_features(
             refpoint,
         )
 
+    if return_shift_candidates:
+        return new_emb, new_box, shift_candidates, inject_mask
     return new_emb, new_box

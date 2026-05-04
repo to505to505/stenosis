@@ -132,14 +132,15 @@ class Config:
     stfs_aggregator_heads: int = 8
     stfs_aggregator_dropout: float = 0.0
 
-    # ── Proposal-Shift refpoint compensation (PSSTT-style) ────────────
+    # ── Proposal-Shift refpoint grid (PSSTT-style) ───────────────────
     # When enabled, H-FN slot refpoints are taken from the strong source
-    # frame, expanded by ``stfs_shifter_padding_alpha`` (analogous to
-    # STQD-Det's α=2 padding coefficient) and adjusted by a small
-    # learnable Δcxcywh predicted from (weak_emb, strong_emb, strong_ref).
+    # frame, expanded by ``stfs_shifter_padding_alpha``, and converted to
+    # a deterministic 5-point grid (centre/up/down/left/right). The
+    # refinement layer cross-attends to these visual hypotheses instead
+    # of relying on a blind MLP Δcxcywh regressor.
     stfs_shifter_enabled: bool = True
     stfs_shifter_padding_alpha: float = 1.5
-    stfs_shifter_hidden_dim: Optional[int] = None  # default: hidden_dim
+    stfs_shifter_hidden_dim: Optional[int] = None  # deprecated/ignored
 
     # ── Multi-frame count consistency loss (L_num) ───────────────────
     consistency_enabled: bool = True

@@ -146,6 +146,29 @@ If `distill_centre_frame_only=True`, this loss is also computed
 only on the centre frame and reuses the same KD-specific teacher
 forward, preserving the low-VRAM centre-frame KD path.
 
+E4 — 5-point proposal-shifted refinement (RefPointShift)
+--------------------------------------------------------
+Problem: the old RefPointShift used an MLP to regress an exact
+`Δcxcywh` offset from embeddings alone. That is geometrically
+blind: it decides where the artery moved before looking at local
+visual evidence. On OOD motion patterns the regressed refpoint can
+push deformable cross-attention into background.
+
+Fix: RefPointShift no longer has trainable MLP parameters. For each
+STFS-injected H-FN slot it builds five explicit reference boxes from
+the strong source refpoint:
+
+  centre, up, down, left, right
+
+The wh of every candidate is `src_wh * stfs_shifter_padding_alpha`.
+The side candidates shift cx/cy by half of that expanded wh. During
+student refinement, normal queries run the standard refinement pass.
+Only STFS-injected slots get a sparse second refinement over the 5
+candidates. The candidate outputs are softly collapsed by foreground
+confidence, so the final tensor keeps shape `(B,T,Q,*)` while the
+deformable cross-attention has sampled visual features from all five
+spatial hypotheses.
+
 Components
 ----------
 rfdetr_video/distill/teacher.py
@@ -181,9 +204,12 @@ rfdetr_video/model.py — VideoRFDETR additions:
         immediately after refine_norm): post-refinement
         hidden states; used by CRRCD when
         distill_through_refine=True (E1).
-    - _captured_stfs_hs and _captured_stfs_mask (captured after
-      inject_features): STFS-enriched embeddings and the mask
-      of modified slots used by L_stfs_align (E3).
+  - _captured_stfs_hs and _captured_stfs_mask (captured after
+        inject_features): STFS-enriched embeddings and the mask
+        of modified slots used by L_stfs_align (E3).
+  - RefPointShift: deterministic 5-point proposal grid with zero
+        trainable parameters. `_refinement_pass` uses it only for
+        STFS-injected slots via sparse candidate refinement (E4).
   - _captured_cross_inputs (forward_pre_hook on
         decoder.layers[-1]): reserved for future losses.
   - In `forward(...)`: KD branches early-return after the
@@ -214,7 +240,9 @@ rfdetr_video/train.py
     stfs_feature_align_weight=...` at startup.
   - Argparse flags: --distill-through-refine (E1),
     --distill-centre-frame-only (E2), --stfs-feature-align,
-    --stfs-feature-align-weight, --stfs-feature-align-teacher-topk.
+    --stfs-feature-align-weight, --stfs-feature-align-teacher-topk,
+    --stfs-shifter-padding-alpha. --stfs-shifter-hidden-dim is
+    deprecated and ignored because RefPointShift has no MLP.
   - Per-step loss: see Branches 1–3 above. Centre-frame
     slicing (E2) applied before teacher/student calls in
     Branches 2+3. CRRCD student_hs source switches to
@@ -298,3 +326,7 @@ foreground teacher slots.
 rfdetr_video/tests/test_smoke.py::test_forward_shapes now also
 asserts that a student forward captures `_captured_stfs_hs` and
 `_captured_stfs_mask` with shape (B,T,Q,*).
+
+rfdetr_video/tests/test_smoke.py::test_refpoint_shift_generates_five_point_grid
+asserts that RefPointShift emits centre/up/down/left/right candidates
+and has zero trainable parameters.

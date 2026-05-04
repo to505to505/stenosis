@@ -20,7 +20,7 @@ import torch
 
 from rfdetr_video.config import Config
 from rfdetr_video.consistency import num_consistency_loss
-from rfdetr_video.stfs import track_queries, inject_features
+from rfdetr_video.stfs import track_queries, inject_features, RefPointShift
 
 
 HEAVY = os.environ.get("RFDETR_VIDEO_HEAVY") == "1"
@@ -165,6 +165,26 @@ def test_stfs_no_tracks_for_low_confidence():
     new_emb, new_ref = inject_features(embed, refs, tracks, alpha=1.0)
     assert torch.allclose(new_emb, embed)
     assert torch.allclose(new_ref, refs)
+
+
+def test_refpoint_shift_generates_five_point_grid():
+    """RefPointShift should be deterministic, not an MLP Δ regressor."""
+    shifter = RefPointShift(d_model=16, padding_alpha=2.0)
+    cur = torch.zeros(1, 16)
+    src = torch.zeros(1, 16)
+    src_ref = torch.tensor([[0.5, 0.5, 0.2, 0.4]])
+
+    candidates = shifter(cur, src, src_ref)
+    assert candidates.shape == (1, 5, 4)
+    assert sum(p.numel() for p in shifter.parameters()) == 0
+
+    expected_wh = torch.tensor([[0.4, 0.8]]).expand(5, 2)
+    assert torch.allclose(candidates[0, :, 2:], expected_wh)
+    assert torch.allclose(candidates[0, 0, :2], torch.tensor([0.5, 0.5]))
+    assert candidates[0, 1, 1] < candidates[0, 0, 1]  # up
+    assert candidates[0, 2, 1] > candidates[0, 0, 1]  # down
+    assert candidates[0, 3, 0] < candidates[0, 0, 0]  # left
+    assert candidates[0, 4, 0] > candidates[0, 0, 0]  # right
 
 
 # ─────────────────────────────────────────────────────────────────────
