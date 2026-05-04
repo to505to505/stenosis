@@ -26,24 +26,31 @@ match the student's geometric augmentations):
     Losses: criterion(pred, targets) (cls + box + giou)
             + λ_num · L_num (multi-frame count consistency)
 
-  Branch 2 — KD specific + CRRCD (per-frame)
-    t_out = teacher.forward_video(teacher_frames_HR)
+  Branch 2 — KD specific + CRRCD (per-frame or centre-frame)
+    If distill_centre_frame_only (E2): slice kd_images and
+    kd_teacher_frames to the centre frame c=T//2 before
+    all Branch-2/3 teacher and student calls (T_kd=1).
+    t_out = teacher.forward_video(kd_teacher_frames)
     student_kd_spec = model(
-        images, query_mode="teacher",
+        kd_images, query_mode="teacher",
         decoder_inputs={tgt, refpoints} from teacher,
     )
+    If distill_through_refine (E1): student_hs_spec comes
+    from model._captured_refined_hs (post-refine_norm).
+    Otherwise: model._captured_decoder_hs (pre-refine).
     distill_spec = distillation_loss(student_kd_spec, t_out)
     loss_crrcd  = CRRCD(teacher_hs, student_hs_spec,
                         foreground_weight)
     Loss: + β_distill · loss_distill_spec
           + β_crrcd   · loss_crrcd
 
-  Branch 3 — KD general (per-frame)
+  Branch 3 — KD general (per-frame or centre-frame)
+    Same centre-frame slicing as Branch 2 when E2 active.
     gen_q = model.sample_general_queries(Q_g)   # 100 queries
     t_out_gen = teacher.forward_video_general(
-        teacher_frames, gen_q.refpoint, gen_q.query_feat,
+        kd_teacher_frames, gen_q.refpoint, gen_q.query_feat,
         min_weight=...)
-    student_kd_gen = model(images, query_mode="general",
+    student_kd_gen = model(kd_images, query_mode="general",
         general_queries=gen_q,
         decoder_inputs={teacher tgt, refpoints})
     Loss: + β_distill · β_gen · loss_distill_gen
@@ -72,10 +79,39 @@ mechanism that has no analogue in the static teacher; running
 it would corrupt the slot alignment with the teacher. In
 VideoRFDETR.forward, both `query_mode == "teacher"` and
 `query_mode == "general"` early-return immediately after the
-transformer call, before STFS injection and refinement.
-ETF (Early Temporal Fusion on backbone features) runs
-unconditionally in all three branches, because the temporal
-window itself is shared.
+transformer call, before STFS injection. ETF (Early Temporal
+Fusion on backbone features) runs unconditionally in all
+three branches, because the temporal window itself is shared.
+
+E1 — KD through refinement (distill_through_refine=True)
+---------------------------------------------------------
+Problem: pre-E1, the KD branches early-returned before the
+refinement layer, so the teacher supervised the pre-refine
+decoder output whereas inference always used the post-refine
+tensor. This misalignment caused the distilled final AP50 to
+be *lower* than the un-distilled final AP50.
+
+Fix: when `distill_through_refine=True`, after computing the
+first-pass (pre-STFS) `hs[-1]` and `ref_unsigmoid`, the KD
+branches call `_refinement_pass` with those tensors. STFS
+stays bypassed (temporal slot alignment is not needed —
+teacher and student use the same query slots). The
+post-refinement output replaces `pred_logits`/`pred_boxes`
+in the returned dict and `_captured_refined_hs` is captured
+for CRRCD after `refine_norm`.
+
+E2 — Centre-frame-only KD (distill_centre_frame_only=True)
+----------------------------------------------------------
+Problem: per-frame KD over all T frames penalises temporal-
+only detections that the H-FN recovery mechanism in STFS is
+designed to make. The 2-D teacher has no knowledge of these
+frames and produces near-zero foreground weights for them,
+effectively penalising STFS-sourced detections.
+
+Fix: when `distill_centre_frame_only=True`, Branches 2 and 3
+slice both `images` and `teacher_frames` to the centre frame
+(c = T//2, T_kd = 1) before any teacher or student call.
+Branch 1 (detection) still sees the full T-frame window.
 
 Components
 ----------
@@ -106,11 +142,20 @@ rfdetr_video/model.py — VideoRFDETR additions:
         self.transformer.decoder): overrides (tgt, refpoints)
         when `decoder_inputs=...` is passed.
   - _captured_decoder_hs  (forward_hook on the decoder):
-        last hidden states for CRRCD.
+        pre-refinement hidden states; used by CRRCD when
+        distill_through_refine=False.
+  - _captured_refined_hs  (captured inside _refinement_pass
+        immediately after refine_norm): post-refinement
+        hidden states; used by CRRCD when
+        distill_through_refine=True (E1).
   - _captured_cross_inputs (forward_pre_hook on
         decoder.layers[-1]): reserved for future losses.
   - In `forward(...)`: KD branches early-return after the
-        transformer, skipping STFS + refinement.
+        transformer, skipping STFS. When
+        distill_through_refine=True they additionally call
+        _refinement_pass on hs[-1] reshaped to (B,T,Q,D)
+        and replace pred_logits/pred_boxes with refined
+        outputs (aux_outputs dropped on this path).
 
 rfdetr_video/dataset.py
   When with_teacher_frame=True, the dataset returns a
@@ -121,14 +166,21 @@ rfdetr_video/dataset.py
 
 rfdetr_video/train.py
   - Builds VideoRFDETR + VideoFrozenRFDETRTeacher; loads the
-    same `checkpoint_best_total.pth` into both.
+    student checkpoint and the teacher checkpoint.
   - Registers teacher queries on the student.
   - Builds CRRCDLoss and assigns it to `model.crrcd` so its
     two _RelationMLPs (F_t, F_ts) are picked up by
     `model.get_param_groups()` (no "backbone" in the name →
     decoder lr=1e-4).
   - Optimizer is built *after* this assignment.
-  - Per-step loss: see Branches 1–3 above. Single
+  - Prints `[KD] distill_through_refine=... 
+    distill_centre_frame_only=...` at startup.
+  - Argparse flags: --distill-through-refine (E1),
+    --distill-centre-frame-only (E2).
+  - Per-step loss: see Branches 1–3 above. Centre-frame
+    slicing (E2) applied before teacher/student calls in
+    Branches 2+3. CRRCD student_hs source switches to
+    model._captured_refined_hs when E1 active. Single
     backward() over the summed loss (one optimizer step
     per `grad_accum_steps`).
 
@@ -156,6 +208,13 @@ Hyper-parameters used for `stfs_crrcd_v6_etf`
   wd=1e-4, MultiStepLR(30,40), warmup 500, AMP,
   grad_clip=0.1.
 
+Hyper-parameters used for `stfs_crrcd_v6_etf_postref_centreKD`
+--------------------------------------------------------------
+  Same as above plus:
+    distill_through_refine=True  (E1)
+    distill_centre_frame_only=True  (E2)
+  Both flags activate together; either can be used alone.
+
 What does NOT receive grads
 ---------------------------
   - All teacher params: requires_grad=False, frozen in
@@ -163,10 +222,20 @@ What does NOT receive grads
     the heavy smoke test).
   - The student backbone is unfrozen but trains at lr=1e-5.
 
-Smoke test
-----------
+Smoke tests
+-----------
 rfdetr_video/tests/test_smoke.py::test_distill_one_step
 (gated on RFDETR_VIDEO_HEAVY=1) runs one full step
 exercising all three branches and asserts non-zero grads
 on `refine_layer`, `model.etf`, and `model.crrcd`, plus
 that every teacher param has `.grad is None`.
+
+rfdetr_video/tests/test_smoke.py::
+    test_distill_through_refine_and_centre_only[E1]
+    test_distill_through_refine_and_centre_only[E1+E2]
+(gated on RFDETR_VIDEO_HEAVY=1) runs Branches 2+3 only
+(no detection loss) and asserts:
+  - refine_layer receives grad from KD branch alone (E1).
+  - CRRCD MLPs receive grad.
+  - teacher params have .grad is None.
+  - E1+E2 variant: pred_logits.shape[0] == B*1 (T_kd=1).
