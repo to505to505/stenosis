@@ -429,3 +429,165 @@ def test_distill_one_step():
     # Teacher params must remain ungrad'd.
     for n, p in teacher.named_parameters():
         assert p.grad is None, f"teacher param '{n}' received gradient"
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+@pytest.mark.parametrize(
+    "through_refine,centre_only",
+    [(True, False), (True, True)],
+    ids=["E1", "E1+E2"],
+)
+def test_distill_through_refine_and_centre_only(through_refine, centre_only):
+    """E1/E2 — KD branches routed through the refinement layer and
+    optionally restricted to the centre frame.
+
+    Asserts:
+      • Refinement layer receives gradient from the KD branch alone
+        (Branch 1 detection loss is omitted from this test, so any
+        gradient on ``refine_layer`` must come from KD post-refine).
+      • CRRCD relation MLPs receive gradient using
+        ``model._captured_refined_hs`` as the student source.
+      • Teacher params have ``.grad is None``.
+      • Centre-frame variant: KD spec/general predictions have
+        ``BT == B * 1`` (T_kd collapsed to 1).
+    """
+    teacher_ckpt = ROOT / "rfdetr_runs" / "rfdetr_large_arcade2x_704_reg" \
+        / "checkpoint_best_total.pth"
+    if not teacher_ckpt.exists():
+        pytest.skip(f"Teacher checkpoint not available: {teacher_ckpt}")
+
+    from rfdetr_video.model import VideoRFDETR
+    from rfdetr_video.distill import (
+        VideoFrozenRFDETRTeacher,
+        distillation_loss,
+        CRRCDLoss,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    cfg = Config(
+        batch_size=1,
+        T=3,
+        img_size=384,
+        distill_teacher_resolution=384,
+        distill_enabled=True,
+        distill_general_enabled=True,
+        distill_num_general_queries=16,
+        distill_num_queries=300,
+        crrcd_enabled=True,
+        crrcd_num_fg=4, crrcd_num_bg=8, crrcd_num_negatives=4,
+        consistency_enabled=True,
+        etf_enabled=True,
+        wandb_enabled=False,
+        distill_through_refine=through_refine,
+        distill_centre_frame_only=centre_only,
+    )
+
+    model = VideoRFDETR(cfg).to(device).train()
+    teacher = VideoFrozenRFDETRTeacher(cfg).to(device).eval()
+    model.register_teacher_queries(
+        teacher.refpoint_embed_weight, teacher.query_feat_weight,
+    )
+    crrcd_module = CRRCDLoss(
+        hidden_dim=int(teacher.hidden_dim),
+        relation_dim=int(cfg.crrcd_relation_dim),
+        frm_hidden_dim=int(cfg.crrcd_hidden_dim),
+        num_fg=int(cfg.crrcd_num_fg),
+        num_bg=int(cfg.crrcd_num_bg),
+        num_negatives=int(cfg.crrcd_num_negatives),
+        temperature=float(cfg.crrcd_temperature),
+    ).to(device)
+    model.crrcd = crrcd_module
+
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    teacher_frames = torch.randn(
+        B, T, 3, cfg.distill_teacher_resolution,
+        cfg.distill_teacher_resolution, device=device,
+    )
+
+    if centre_only:
+        c = T // 2
+        kd_frames = frames[:, c:c + 1].contiguous()
+        kd_teacher = teacher_frames[:, c:c + 1].contiguous()
+        T_kd = 1
+    else:
+        kd_frames = frames
+        kd_teacher = teacher_frames
+        T_kd = T
+
+    # ── Branch 2: KD-spec + CRRCD ────────────────────────────────────
+    with torch.no_grad():
+        t_out = teacher.forward_video(kd_teacher)
+    s_kd_spec = model(
+        kd_frames,
+        query_mode="teacher",
+        decoder_inputs={
+            "tgt": t_out["decoder_tgt"],
+            "refpoints": t_out["decoder_refpoints"],
+        },
+    )
+    if through_refine:
+        student_hs_spec = model._captured_refined_hs
+    else:
+        student_hs_spec = model._captured_decoder_hs
+    assert student_hs_spec is not None, "student hs must be captured"
+    assert s_kd_spec["pred_logits"].shape[0] == B * T_kd, (
+        f"KD-spec pred_logits has BT={s_kd_spec['pred_logits'].shape[0]}, "
+        f"expected B*T_kd={B * T_kd}"
+    )
+    distill_spec = distillation_loss(s_kd_spec, t_out, cfg)
+    loss = cfg.distill_loss_weight * distill_spec["loss_distill"]
+    loss_rcd = crrcd_module(
+        teacher_hs=t_out["decoder_hs"],
+        student_hs=student_hs_spec,
+        weights=t_out["foreground_weight"],
+    )
+    loss = loss + cfg.crrcd_loss_weight * loss_rcd
+
+    # ── Branch 3: KD-general ─────────────────────────────────────────
+    gen_q = model.sample_general_queries(
+        cfg.distill_num_general_queries, device=device, dtype=frames.dtype,
+    )
+    with torch.no_grad():
+        t_out_gen = teacher.forward_video_general(
+            kd_teacher,
+            gen_q["refpoint"], gen_q["query_feat"],
+            min_weight=cfg.distill_general_min_weight,
+        )
+    s_kd_gen = model(
+        kd_frames,
+        query_mode="general",
+        general_queries=gen_q,
+        decoder_inputs={
+            "tgt": t_out_gen["decoder_tgt"],
+            "refpoints": t_out_gen["decoder_refpoints"],
+        },
+    )
+    assert s_kd_gen["pred_logits"].shape[0] == B * T_kd, (
+        f"KD-gen pred_logits has BT={s_kd_gen['pred_logits'].shape[0]}, "
+        f"expected B*T_kd={B * T_kd}"
+    )
+    distill_gen = distillation_loss(s_kd_gen, t_out_gen, cfg)
+    loss = loss + (
+        cfg.distill_loss_weight * cfg.distill_general_loss_weight
+        * distill_gen["loss_distill"]
+    )
+
+    assert torch.isfinite(loss), f"loss is not finite: {loss.item()}"
+    loss.backward()
+
+    # E1: refine_layer must get grad from KD branch (Branch 1 omitted).
+    refine_grads = [
+        p.grad for p in model.refine_layer.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in refine_grads), \
+        "refinement layer must receive gradient from KD branch (E1)"
+
+    crrcd_grads = [
+        p.grad for p in crrcd_module.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in crrcd_grads), \
+        "CRRCD relation MLPs must receive gradient"
+
+    for n, p in teacher.named_parameters():
+        assert p.grad is None, f"teacher param '{n}' received gradient"

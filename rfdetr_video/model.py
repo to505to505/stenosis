@@ -289,6 +289,9 @@ class VideoRFDETR(nn.Module):
 
         # ── Decoder-output capture (CRRCD) ──────────────────────────
         self._captured_decoder_hs: Optional[torch.Tensor] = None
+        # Post-refinement hidden state capture (E1 — CRRCD on the
+        # tensor that actually feeds the inference heads).
+        self._captured_refined_hs: Optional[torch.Tensor] = None
 
         def _capture_hs_post_hook(_m, _a, _kw, output):
             if isinstance(output, (list, tuple)) and len(output) >= 1:
@@ -471,6 +474,9 @@ class VideoRFDETR(nn.Module):
             level_start_index=level_start_index,
         )
         out = self.refine_norm(out)              # (BT, Q, D)
+        # Capture post-refinement hidden state so CRRCD can hook the
+        # exact tensor consumed by the inference heads (E1).
+        self._captured_refined_hs = out
         # Apply heads on refined embeddings; reuse refpoint reparam math.
         outputs_class, outputs_coord = self._heads(out, obj_center)
         # Reshape back to (B, T, Q, *).
@@ -509,6 +515,7 @@ class VideoRFDETR(nn.Module):
 
         # Reset captures.
         self._captured_decoder_hs = None
+        self._captured_refined_hs = None
         self._captured_cross_inputs = {}
 
         # ── 1. Backbone on B*T frames ────────────────────────────────
@@ -586,6 +593,31 @@ class VideoRFDETR(nn.Module):
                 }
                 if self.aux_loss:
                     out["aux_outputs"] = self._aux_outputs(stacked_class, stacked_coord)
+
+                # E1: route the teacher-aligned queries through the
+                # refinement layer so KD/CRRCD supervise the exact
+                # tensors used at inference. STFS stays bypassed
+                # (1:1 teacher↔student slot alignment is preserved).
+                if getattr(self.cfg, "distill_through_refine", False):
+                    BT_kd, Q_kd, D_kd = hs[-1].shape
+                    assert BT_kd == B * T, (
+                        f"KD-branch BT mismatch: hs[-1] has BT={BT_kd}, "
+                        f"expected B*T={B*T}"
+                    )
+                    query_embed_btq = hs[-1].reshape(B, T, Q_kd, D_kd)
+                    refpoint_btq = ref_unsigmoid.reshape(B, T, Q_kd, 4)
+                    refined_class_btq, refined_coord_btq = self._refinement_pass(
+                        query_embed_btq, refpoint_btq,
+                    )
+                    K_kd = refined_class_btq.shape[-1]
+                    # KD branches expect ``(BT, Q, *)`` — flatten back.
+                    out["pred_logits"] = refined_class_btq.reshape(BT_kd, Q_kd, K_kd)
+                    out["pred_boxes"] = refined_coord_btq.reshape(BT_kd, Q_kd, 4)
+                    # Refinement is single-layer; ``aux_outputs`` from the
+                    # first decoder pass would mix unrefined predictions
+                    # into the KD aux loss. Drop them on this path —
+                    # ``distillation_loss`` only needs the main fields.
+                    out.pop("aux_outputs", None)
 
             if self.two_stage and hs_enc is not None:
                 hs_enc_list = hs_enc.chunk(1, dim=1)

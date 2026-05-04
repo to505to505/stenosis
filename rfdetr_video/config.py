@@ -79,6 +79,15 @@ class Config:
     distill_general_loss_weight: float = 0.5
     distill_general_min_weight: float = 0.1
     distill_general_query_std: float = 0.02
+    # E1: route KD branches through the refinement layer so the teacher's
+    # knowledge lands on the post-refinement tensors that drive inference.
+    # STFS stays bypassed in KD branches to preserve 1:1 teacher↔student
+    # slot alignment required by KD-DETR consistent distillation points.
+    distill_through_refine: bool = False
+    # E2: restrict KD/CRRCD branches to the centre frame of each window
+    # so the 2D teacher does not penalise temporal-only detections that
+    # the video model is designed to make on H-FN frames.
+    distill_centre_frame_only: bool = False
 
     # ── CRRCD: per-frame relational contrastive distillation ──────────
     crrcd_enabled: bool = False

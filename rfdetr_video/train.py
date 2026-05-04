@@ -163,6 +163,12 @@ def train(cfg: Config):
                 f"τ={cfg.crrcd_temperature}, β={cfg.crrcd_loss_weight}"
             )
 
+    if cfg.distill_enabled:
+        print(
+            f"[KD] distill_through_refine={cfg.distill_through_refine} "
+            f"distill_centre_frame_only={cfg.distill_centre_frame_only}"
+        )
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Trainable params: {n_params:,} / {n_total:,} total")
@@ -242,18 +248,34 @@ def train(cfg: Config):
 
                 # ── Branch 2: CRRCD + KD specific (per-frame) ─────
                 if cfg.distill_enabled:
-                    teacher_frames_bt5 = teacher_frames  # (B, T, 3, S, S)
+                    # E2: optionally restrict KD/CRRCD to the centre frame
+                    # so the 2D teacher does not penalise temporal-only
+                    # detections produced by Branch 1 (full-T STFS).
+                    if cfg.distill_centre_frame_only:
+                        c = T // 2
+                        kd_images = images[:, c:c + 1].contiguous()
+                        kd_teacher_frames = teacher_frames[:, c:c + 1].contiguous()
+                    else:
+                        kd_images = images
+                        kd_teacher_frames = teacher_frames
                     with torch.no_grad():
-                        t_out = teacher.forward_video(teacher_frames_bt5)
+                        t_out = teacher.forward_video(kd_teacher_frames)
                     student_kd_spec = model(
-                        images,
+                        kd_images,
                         query_mode="teacher",
                         decoder_inputs={
                             "tgt": t_out["decoder_tgt"],            # (BT, Q, D)
                             "refpoints": t_out["decoder_refpoints"],
                         },
                     )
-                    student_hs_spec = model._captured_decoder_hs   # (BT, Q, D)
+                    # E1: when KD goes through refinement, CRRCD must
+                    # hook the post-refine hidden state (the actual
+                    # head input at inference). Otherwise fall back to
+                    # the pre-refine decoder output.
+                    if cfg.distill_through_refine:
+                        student_hs_spec = model._captured_refined_hs
+                    else:
+                        student_hs_spec = model._captured_decoder_hs
                     distill_spec = distillation_loss(
                         student_kd_spec, t_out, cfg,
                     )
@@ -280,14 +302,21 @@ def train(cfg: Config):
                     gen_q = model.sample_general_queries(
                         Q_g, device=device, dtype=images.dtype,
                     )
+                    if cfg.distill_centre_frame_only:
+                        c = T // 2
+                        gen_images = images[:, c:c + 1].contiguous()
+                        gen_teacher_frames = teacher_frames[:, c:c + 1].contiguous()
+                    else:
+                        gen_images = images
+                        gen_teacher_frames = teacher_frames
                     with torch.no_grad():
                         t_out_gen = teacher.forward_video_general(
-                            teacher_frames,
+                            gen_teacher_frames,
                             gen_q["refpoint"], gen_q["query_feat"],
                             min_weight=cfg.distill_general_min_weight,
                         )
                     student_kd_gen = model(
-                        images,
+                        gen_images,
                         query_mode="general",
                         general_queries=gen_q,
                         decoder_inputs={
@@ -453,6 +482,13 @@ def parse_args():
     p.add_argument("--crrcd-num-bg", type=int, default=None)
     p.add_argument("--crrcd-num-negatives", type=int, default=None)
     p.add_argument("--crrcd-temperature", type=float, default=None)
+    # E1 / E2: where KD/CRRCD lands in the video pipeline.
+    p.add_argument("--distill-through-refine", action="store_true",
+                   help="E1: route KD branches through the refinement layer "
+                        "and capture CRRCD on the post-refine hidden state.")
+    p.add_argument("--distill-centre-frame-only", action="store_true",
+                   help="E2: restrict KD/CRRCD branches to the centre frame "
+                        "of each window (T_kd=1).")
 
     # STFS knobs
     p.add_argument("--stfs-iou-weight", type=float, default=None)
@@ -530,6 +566,10 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "distill_teacher_ckpt", args.distill_teacher_ckpt, str)
     if args.crrcd:
         cfg_kwargs["crrcd_enabled"] = True
+    if args.distill_through_refine:
+        cfg_kwargs["distill_through_refine"] = True
+    if args.distill_centre_frame_only:
+        cfg_kwargs["distill_centre_frame_only"] = True
     _maybe(cfg_kwargs, "crrcd_loss_weight", args.crrcd_weight, float)
     _maybe(cfg_kwargs, "crrcd_num_fg", args.crrcd_num_fg, int)
     _maybe(cfg_kwargs, "crrcd_num_bg", args.crrcd_num_bg, int)
