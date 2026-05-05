@@ -1,0 +1,31 @@
+STFS Ablation Tests – stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter
+Base STFS params: iou_gate=0.1  score_thresh=0.3  iou_w=2.0  l1_w=5.0  cls_w=2.0
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1614 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5298  AP50=0.2619  AP75=0.0133  AP5095=0.0718  F1=0.3188  Frag=0.41  FragRate=0.0298
+  MICRO (pooled)      AP30=0.4158  AP50=0.1049  AP75=0.0007  AP5095=0.0210  F1=0.2251  P=0.2923  R=0.1830  thr=0.4600  Frag=66  FragRate=0.0289
+  Dataset : dataset2_split_test  (31 videos, 1128 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5806  AP50=0.3522  AP75=0.0256  AP5095=0.1047  F1=0.3990  Frag=2.55  FragRate=0.0559
+  MICRO (pooled)      AP30=0.5777  AP50=0.2661  AP75=0.0074  AP5095=0.0680  F1=0.3688  P=0.4841  R=0.2979  thr=0.5500  Frag=79  FragRate=0.0700
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.4158  0.1049  0.0007  0.2251  0.2923  0.1830     66   0.0289
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.5777  0.2661  0.0074  0.3688  0.4841  0.2979     79   0.0700
