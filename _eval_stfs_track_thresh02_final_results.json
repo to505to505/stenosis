@@ -1,0 +1,86 @@
+{
+  "results": [
+    {
+      "dataset": "cadica_50plus_new",
+      "run_name": "stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter",
+      "run_dir": "/home/dsa/stenosis/rfdetr_video/runs/stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter",
+      "stfs_track_score_thresh": 0.2,
+      "previous_stfs_track_score_thresh": 0.3,
+      "metrics": {
+        "macro": {
+          "AP30": 0.5168950782496956,
+          "AP50": 0.2668189078016895,
+          "AP75": 0.016799057121664455,
+          "AP5095": 0.0772555554339983,
+          "F1": 0.3284264808192026
+        },
+        "micro": {
+          "AP30": 0.3959507398653078,
+          "AP50": 0.10987572255522485,
+          "AP75": 0.0008356623483797039,
+          "AP5095": 0.022737280112378303,
+          "F1": 0.23754376514947487,
+          "P": 0.3086074177746676,
+          "R": 0.19308231173380036,
+          "thr": 0.49
+        }
+      },
+      "track_stats": {
+        "windows": 1614,
+        "avg_tracks_per_window": 0.7298636926889716,
+        "avg_injected_slots_per_window": 0.5600991325898389,
+        "avg_centre_injected_slots_per_window": 0.06753407682775713,
+        "window_any_injection_rate": 0.3680297397769517,
+        "window_centre_injection_rate": 0.06753407682775713,
+        "best_t_counts": {
+          "0": 211,
+          "1": 242,
+          "2": 269,
+          "3": 242,
+          "4": 214
+        }
+      }
+    },
+    {
+      "dataset": "dataset2_split_test",
+      "run_name": "stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter",
+      "run_dir": "/home/dsa/stenosis/rfdetr_video/runs/stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter",
+      "stfs_track_score_thresh": 0.2,
+      "previous_stfs_track_score_thresh": 0.3,
+      "metrics": {
+        "macro": {
+          "AP30": 0.5623049673754181,
+          "AP50": 0.3609670846134542,
+          "AP75": 0.02382543525941158,
+          "AP5095": 0.10766389163074233,
+          "F1": 0.40077926355300514
+        },
+        "micro": {
+          "AP30": 0.5675885433524236,
+          "AP50": 0.2639630508494307,
+          "AP75": 0.00931248731448919,
+          "AP5095": 0.06952097915776131,
+          "F1": 0.3658787255909558,
+          "P": 0.4352078239608802,
+          "R": 0.31560283687943264,
+          "thr": 0.55
+        }
+      },
+      "track_stats": {
+        "windows": 1128,
+        "avg_tracks_per_window": 0.8306737588652482,
+        "avg_injected_slots_per_window": 0.4627659574468085,
+        "avg_centre_injected_slots_per_window": 0.05851063829787234,
+        "window_any_injection_rate": 0.32269503546099293,
+        "window_centre_injection_rate": 0.05851063829787234,
+        "best_t_counts": {
+          "0": 181,
+          "1": 189,
+          "2": 194,
+          "3": 185,
+          "4": 188
+        }
+      }
+    }
+  ]
+}

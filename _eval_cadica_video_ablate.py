@@ -155,7 +155,21 @@ def _compute_metrics(all_dets, all_gts, per_video_dets, per_video_gts):
     return macro, micro
 
 
-def _identity_inject(query_embed, refpoint, tracks_per_batch, *, alpha, aggregator=None, shifter=None):
+def _identity_inject(
+    query_embed,
+    refpoint,
+    tracks_per_batch,
+    *,
+    alpha,
+    aggregator=None,
+    shifter=None,
+    return_shift_candidates: bool = False,
+):
+    if return_shift_candidates:
+        inject_mask = torch.zeros(
+            query_embed.shape[:3], dtype=torch.bool, device=query_embed.device,
+        )
+        return query_embed, refpoint, None, inject_mask
     return query_embed, refpoint
 
 
@@ -166,12 +180,37 @@ def patched_inject(mode: str, stats: TrackStats | None = None):
     original = video_model_mod.inject_features
 
 
-    def wrapper(query_embed, refpoint, tracks_per_batch, *, alpha, aggregator=None, shifter=None):
+    def wrapper(
+        query_embed,
+        refpoint,
+        tracks_per_batch,
+        *,
+        alpha,
+        aggregator=None,
+        shifter=None,
+        return_shift_candidates: bool = False,
+    ):
         if stats is not None:
             stats.record(tracks_per_batch, query_embed.shape)
         if mode == "identity":
-            return query_embed, refpoint
-        return original(query_embed, refpoint, tracks_per_batch, alpha=alpha, aggregator=aggregator, shifter=shifter)
+            return _identity_inject(
+                query_embed,
+                refpoint,
+                tracks_per_batch,
+                alpha=alpha,
+                aggregator=aggregator,
+                shifter=shifter,
+                return_shift_candidates=return_shift_candidates,
+            )
+        return original(
+            query_embed,
+            refpoint,
+            tracks_per_batch,
+            alpha=alpha,
+            aggregator=aggregator,
+            shifter=shifter,
+            return_shift_candidates=return_shift_candidates,
+        )
 
     video_model_mod.inject_features = wrapper
     try:
