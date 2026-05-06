@@ -175,6 +175,10 @@ def train(cfg: Config):
             f"stfs_feature_align={cfg.stfs_feature_align_enabled} "
             f"stfs_feature_align_weight={cfg.stfs_feature_align_weight}"
         )
+    print(
+        f"[Video] stfs_enabled={cfg.stfs_enabled} "
+        f"refinement_enabled={cfg.refinement_enabled}"
+    )
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -498,6 +502,9 @@ def parse_args():
     p.add_argument("--output-dir", type=str, default="rfdetr_video/runs")
     p.add_argument("--run-name", type=str, default=None)
     p.add_argument("--freeze-decoder", action="store_true")
+    p.add_argument("--no-refinement", action="store_true",
+                   help="Disable the student refinement layer and train/eval "
+                        "directly on first-pass decoder predictions.")
     p.add_argument("--no-wandb", action="store_true")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--grad-accum", type=int, default=2)
@@ -529,6 +536,8 @@ def parse_args():
     p.add_argument("--stfs-feature-align-teacher-topk", type=int, default=None)
 
     # STFS knobs
+    p.add_argument("--no-stfs", action="store_true",
+                   help="Fully skip STFS tracking/injection in student mode.")
     p.add_argument("--stfs-iou-weight", type=float, default=None)
     p.add_argument("--stfs-l1-weight", type=float, default=None)
     p.add_argument("--stfs-cls-weight", type=float, default=None)
@@ -574,7 +583,12 @@ def parse_args():
     p.add_argument("--temporal-dropout-neighbour-p", type=float, default=None)
     p.add_argument("--temporal-dropout-radius", type=int, default=None)
     p.add_argument("--temporal-dropout-noise-std", type=float, default=None)
-    return p.parse_args()
+    args = p.parse_args()
+    if args.no_refinement and args.distill_through_refine:
+        p.error("--no-refinement cannot be combined with --distill-through-refine")
+    if args.no_stfs and args.stfs_feature_align:
+        p.error("--no-stfs cannot be combined with --stfs-feature-align")
+    return args
 
 
 def _maybe(d, k, v, cast=lambda x: x):
@@ -593,6 +607,8 @@ if __name__ == "__main__":
         T=args.T,
         rfdetr_checkpoint=args.checkpoint,
         freeze_decoder=args.freeze_decoder,
+        refinement_enabled=not args.no_refinement,
+        stfs_enabled=not args.no_stfs,
         wandb_enabled=not args.no_wandb,
         run_name=args.run_name,
         num_workers=args.num_workers,

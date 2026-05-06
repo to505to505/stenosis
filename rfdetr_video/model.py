@@ -11,19 +11,24 @@ Pipeline (Phases 2–5 of the spec):
      predictions for every frame: ``hs[L, B*T, Q, D]``,
      ``ref_unsigmoid[B*T, Q, 4]``.
 
-  3. STFS (``stfs.track_queries`` + ``stfs.inject_features``) chains
-     confident slots into tracks across the T frames and overwrites
-     Hypothesis-False-Negative slot embeddings + reference points with
-     the strongest in-track frame's counterparts.
+  3. When ``Config.stfs_enabled`` is true, STFS
+      (``stfs.track_queries`` + ``stfs.inject_features``) chains confident
+      slots into tracks across the T frames and overwrites
+      Hypothesis-False-Negative slot embeddings + reference points with the
+      strongest in-track frame's counterparts. When disabled, this step is
+      fully skipped.
 
-  4. A *refinement* deformable decoder layer (warm-init deepcopy of the
-     last RF-DETR decoder layer) re-runs cross-attention over the
-     per-frame memory using the enriched queries, producing the final
-     ``pred_logits[B,T,Q,K]`` / ``pred_boxes[B,T,Q,4]``.
+  4. When ``Config.refinement_enabled`` is true, a *refinement*
+      deformable decoder layer (warm-init deepcopy of the last RF-DETR
+      decoder layer) re-runs cross-attention over the per-frame memory
+      using the enriched queries, producing the final
+      ``pred_logits[B,T,Q,K]`` / ``pred_boxes[B,T,Q,4]``. When disabled,
+      student mode trains/evaluates directly on first-pass decoder outputs.
 
 The KD-DETR ``query_mode="teacher"`` / ``"general"`` branches reuse the
 existing slot-injection / decoder-output capture hooks for per-frame
-CRRCD distillation; STFS + refinement are skipped in those branches.
+CRRCD distillation; STFS is skipped, and refinement runs only when
+``distill_through_refine`` is enabled.
 """
 
 from __future__ import annotations
@@ -212,21 +217,33 @@ class VideoRFDETR(nn.Module):
 
         # ── Refinement decoder layer (warm-init from last layer) ────
         # Deepcopy so its parameters are independent and trainable
-        # regardless of ``freeze_decoder``.
-        self.refine_layer = copy.deepcopy(self.transformer.decoder.layers[-1])
-        # Refinement layer always runs ungrouped (group_detr=1) so it
-        # cross-attends to the full Q query set without the SA group split.
-        self.refine_layer.group_detr = 1
-        for p in self.refine_layer.parameters():
-            p.requires_grad = True
-        self.refine_norm = copy.deepcopy(self.transformer.decoder.norm)
-        for p in self.refine_norm.parameters():
-            p.requires_grad = True
-        self.refine_ref_point_head = copy.deepcopy(
-            self.transformer.decoder.ref_point_head
-        )
-        for p in self.refine_ref_point_head.parameters():
-            p.requires_grad = True
+        # regardless of ``freeze_decoder``. KD post-refine can request
+        # the layer even when the student ablation disables final
+        # refinement, but the CLI prevents that ambiguous combination.
+        needs_refinement = cfg.refinement_enabled or cfg.distill_through_refine
+        if needs_refinement:
+            self.refine_layer: Optional[nn.Module] = copy.deepcopy(
+                self.transformer.decoder.layers[-1]
+            )
+            # Refinement layer always runs ungrouped (group_detr=1) so it
+            # cross-attends to the full Q query set without the SA group split.
+            self.refine_layer.group_detr = 1
+            for p in self.refine_layer.parameters():
+                p.requires_grad = True
+            self.refine_norm: Optional[nn.Module] = copy.deepcopy(
+                self.transformer.decoder.norm
+            )
+            for p in self.refine_norm.parameters():
+                p.requires_grad = True
+            self.refine_ref_point_head: Optional[nn.Module] = copy.deepcopy(
+                self.transformer.decoder.ref_point_head
+            )
+            for p in self.refine_ref_point_head.parameters():
+                p.requires_grad = True
+        else:
+            self.refine_layer = None
+            self.refine_norm = None
+            self.refine_ref_point_head = None
 
         # ── Early Temporal Fusion (ETF) ────────────────────────────────
         # Lightweight temporal self-attention applied to backbone feature
@@ -247,7 +264,7 @@ class VideoRFDETR(nn.Module):
         # is zero-init on its attention out_proj. RefPointShift is now a
         # deterministic 5-point grid (centre/up/down/left/right), not a
         # blind MLP offset regressor.
-        if cfg.stfs_aggregator_enabled:
+        if cfg.stfs_enabled and cfg.stfs_aggregator_enabled:
             self.stfs_aggregator: Optional[FeatureAggregator] = FeatureAggregator(
                 d_model=cfg.hidden_dim,
                 n_heads=cfg.stfs_aggregator_heads,
@@ -255,7 +272,7 @@ class VideoRFDETR(nn.Module):
             )
         else:
             self.stfs_aggregator = None
-        if cfg.stfs_shifter_enabled:
+        if cfg.stfs_enabled and cfg.stfs_shifter_enabled:
             self.stfs_shifter: Optional[RefPointShift] = RefPointShift(
                 d_model=cfg.hidden_dim,
                 hidden_dim=cfg.stfs_shifter_hidden_dim,
@@ -431,6 +448,15 @@ class VideoRFDETR(nn.Module):
         spatial_shapes = cap.get("spatial_shapes")
         level_start_index = cap.get("level_start_index")
         memory_key_padding_mask = cap.get("memory_key_padding_mask")
+        if (
+            self.refine_layer is None
+            or self.refine_norm is None
+            or self.refine_ref_point_head is None
+        ):
+            raise RuntimeError(
+                "Refinement pass was requested, but refinement modules are "
+                "disabled by Config.refinement_enabled=False."
+            )
         if memory is None or spatial_shapes is None:
             raise RuntimeError(
                 "Refinement pass requires the first decoder pass to have "
@@ -563,10 +589,11 @@ class VideoRFDETR(nn.Module):
 
         Args:
             frames: (B, T, 3, H, W) student frames.
-            query_mode: "student" → full STFS + refinement. "teacher" /
-                "general" → per-frame slot-aligned forward used by KD/CRRCD
-                branches; STFS + refinement are skipped and the output
-                is ``(B*T, Q, *)``.
+            query_mode: "student" → optional STFS plus optional refinement.
+                "teacher" / "general" → per-frame slot-aligned forward used
+                by KD/CRRCD branches; STFS is skipped and refinement runs only
+                when ``distill_through_refine`` is enabled. The output is
+                ``(B*T, Q, *)``.
             general_queries / decoder_inputs: as in
                 :class:`rfdetr_temporal.model.TemporalRFDETR`.
 
@@ -713,37 +740,47 @@ class VideoRFDETR(nn.Module):
         Q = first_pred_logits.shape[-2]
         D = hs.shape[-1]
 
-        # ── 6. STFS: track + inject ─────────────────────────────────
-        pred_boxes_btq = first_pred_boxes.reshape(B, T, Q, 4)
-        pred_logits_btq = first_pred_logits.reshape(B, T, Q, K)
-        tracks = track_queries(
-            pred_boxes_btq, pred_logits_btq,
-            iou_weight=self.cfg.stfs_iou_weight,
-            l1_weight=self.cfg.stfs_l1_weight,
-            cls_weight=self.cfg.stfs_cls_weight,
-            iou_gate=self.cfg.stfs_match_iou_thresh,
-            score_thresh=self.cfg.stfs_track_score_thresh,
-            min_track_len=self.cfg.stfs_min_track_len,
-        )
-
         query_embed_btq = hs[-1].reshape(B, T, Q, D)        # gradient through decoder
         refpoint_btq = ref_unsigmoid.reshape(B, T, Q, 4)
-        enriched_emb, enriched_ref, shift_candidates, inject_mask = inject_features(
-            query_embed_btq, refpoint_btq, tracks,
-            alpha=self.cfg.stfs_inject_alpha,
-            aggregator=self.stfs_aggregator,
-            shifter=self.stfs_shifter,
-            return_shift_candidates=True,
-        )
-        self._captured_stfs_hs = enriched_emb
-        self._captured_stfs_mask = inject_mask
 
-        # ── 7. Refinement pass on enriched queries ───────────────────
-        outputs_class_btq, outputs_coord_btq = self._refinement_pass(
-            enriched_emb, enriched_ref,
-            candidate_refpoints_unsigmoid=shift_candidates,
-            candidate_mask=self._captured_stfs_mask,
-        )
+        # ── 6. Optional STFS: track + inject ─────────────────────────
+        if getattr(self.cfg, "stfs_enabled", True):
+            pred_boxes_btq = first_pred_boxes.reshape(B, T, Q, 4)
+            pred_logits_btq = first_pred_logits.reshape(B, T, Q, K)
+            tracks = track_queries(
+                pred_boxes_btq, pred_logits_btq,
+                iou_weight=self.cfg.stfs_iou_weight,
+                l1_weight=self.cfg.stfs_l1_weight,
+                cls_weight=self.cfg.stfs_cls_weight,
+                iou_gate=self.cfg.stfs_match_iou_thresh,
+                score_thresh=self.cfg.stfs_track_score_thresh,
+                min_track_len=self.cfg.stfs_min_track_len,
+            )
+
+            enriched_emb, enriched_ref, shift_candidates, inject_mask = inject_features(
+                query_embed_btq, refpoint_btq, tracks,
+                alpha=self.cfg.stfs_inject_alpha,
+                aggregator=self.stfs_aggregator,
+                shifter=self.stfs_shifter,
+                return_shift_candidates=True,
+            )
+            self._captured_stfs_hs = enriched_emb
+            self._captured_stfs_mask = inject_mask
+        else:
+            enriched_emb = query_embed_btq
+            enriched_ref = refpoint_btq
+            shift_candidates = None
+
+        # ── 7. Optional refinement pass on enriched queries ──────────
+        if getattr(self.cfg, "refinement_enabled", True):
+            outputs_class_btq, outputs_coord_btq = self._refinement_pass(
+                enriched_emb, enriched_ref,
+                candidate_refpoints_unsigmoid=shift_candidates,
+                candidate_mask=self._captured_stfs_mask,
+            )
+        else:
+            outputs_class_btq = first_pred_logits.reshape(B, T, Q, K)
+            outputs_coord_btq = first_pred_boxes.reshape(B, T, Q, 4)
 
         out = {
             "pred_logits": outputs_class_btq,    # (B, T, Q, K)

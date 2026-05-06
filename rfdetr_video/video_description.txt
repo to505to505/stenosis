@@ -574,8 +574,11 @@ SetCriterion внутри для каждого из B*T "изображений
 ────────────────────────────────────────────────────────────────────────────────
 
   "student" — learnable refpoint_embed + query_feat (group_detr=13 train / 1 eval)
-              STFS + refinement активны.
-              Hungarian loss обучает detection head + decoder + refinement.
+              STFS и refinement активны по умолчанию и отключаются через
+              --no-stfs / stfs_enabled=False и
+              --no-refinement / refinement_enabled=False.
+              Hungarian loss обучает detection head + decoder + refinement
+              только когда refinement_enabled=True.
 
   "teacher" — буферы teacher_refpoint + teacher_query_feat (group_detr=1)
               STFS и refinement НЕ запускаются.
@@ -592,8 +595,8 @@ SetCriterion внутри для каждого из B*T "изображений
   query_feat                 ✅ обучается   буфер           буфер
   transformer.decoder        ✅             ✅               ✅
   refine_layer               ✅             ✗               ✗
-  stfs_aggregator            ✅             ✗               ✗
-  stfs_shifter (0 params)    geometry only  ✗               ✗
+  stfs_aggregator            ✅ если STFS    ✗               ✗
+  stfs_shifter (0 params)    geometry/STFS  ✗               ✗
   class_embed / bbox_embed   ✅             ✅               ✅
   backbone                   ✗ (frozen)     ✗ (frozen)      ✗ (frozen)
   teacher.*                  —              0 (no_grad)      0 (no_grad)

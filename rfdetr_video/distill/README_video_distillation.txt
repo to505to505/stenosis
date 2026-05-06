@@ -204,9 +204,10 @@ rfdetr_video/model.py — VideoRFDETR additions:
         immediately after refine_norm): post-refinement
         hidden states; used by CRRCD when
         distill_through_refine=True (E1).
-  - _captured_stfs_hs and _captured_stfs_mask (captured after
-        inject_features): STFS-enriched embeddings and the mask
-        of modified slots used by L_stfs_align (E3).
+    - _captured_stfs_hs and _captured_stfs_mask (captured after
+      inject_features): STFS-enriched embeddings and the mask
+      of modified slots used by L_stfs_align (E3). They remain
+      None when stfs_enabled=False / --no-stfs.
   - RefPointShift: deterministic 5-point proposal grid with zero
         trainable parameters. `_refinement_pass` uses it only for
         STFS-injected slots via sparse candidate refinement (E4).
@@ -237,12 +238,15 @@ rfdetr_video/train.py
   - Optimizer is built *after* this assignment.
   - Prints `[KD] distill_through_refine=... 
     distill_centre_frame_only=... stfs_feature_align=...
-    stfs_feature_align_weight=...` at startup.
+    stfs_feature_align_weight=...` and
+    `[Video] stfs_enabled=... refinement_enabled=...` at startup.
   - Argparse flags: --distill-through-refine (E1),
     --distill-centre-frame-only (E2), --stfs-feature-align,
     --stfs-feature-align-weight, --stfs-feature-align-teacher-topk,
-    --stfs-shifter-padding-alpha. --stfs-shifter-hidden-dim is
-    deprecated and ignored because RefPointShift has no MLP.
+    --stfs-shifter-padding-alpha, --no-stfs for full STFS bypass,
+    --no-refinement for first-pass decoder-output training/eval.
+    --stfs-shifter-hidden-dim is deprecated and ignored because
+    RefPointShift has no MLP.
   - Per-step loss: see Branches 1–3 above. Centre-frame
     slicing (E2) applied before teacher/student calls in
     Branches 2+3. CRRCD student_hs source switches to

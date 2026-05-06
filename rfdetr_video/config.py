@@ -59,6 +59,12 @@ class Config:
     seed: int = 42
     amp: bool = True
 
+    # ── Video refinement ───────────────────────────────────────────────
+    # Warm-init extra decoder layer after STFS. Disable for first-pass
+    # ablations/training where final predictions should come directly
+    # from the base RF-DETR decoder output.
+    refinement_enabled: bool = True
+
     # ── KD-DETR distillation (specific + general sampling) ────────────
     distill_enabled: bool = False
     distill_teacher_ckpt: str = (
@@ -107,6 +113,9 @@ class Config:
     crrcd_temperature: float = 0.1
 
     # ── STFS: Query-Level Spatio-Temporal Feature Sharing ─────────────
+    # Disable to fully bypass track_queries/inject_features and train/eval
+    # the student on plain per-frame decoder queries.
+    stfs_enabled: bool = True
     # Per-frame Hungarian tracking cost weights: c = w_iou·(1-IoU) +
     # w_l1·L1(centres) + w_cls·(1 - class_prob).
     stfs_iou_weight: float = 2.0

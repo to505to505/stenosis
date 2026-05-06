@@ -59,14 +59,42 @@ def test_constraint_checklist():
     # STFS + refinement integration.
     assert "track_queries" in src and "inject_features" in src
     assert "_refinement_pass" in src
+    assert "stfs_enabled" in src
+    assert "refinement_enabled" in src
     # KD branches present.
     assert 'query_mode == "teacher"' in src
     assert '"general"' in src
     # Refinement layer is a deepcopy (warm-init).
-    assert "copy.deepcopy(self.transformer.decoder.layers[-1])" in src
+    assert (
+        "copy.deepcopy(self.transformer.decoder.layers[-1])" in src
+        or "copy.deepcopy(\n                self.transformer.decoder.layers[-1]" in src
+    )
 
     # Consistency loss penalises flickering.
     assert callable(num_consistency_loss)
+
+
+def test_no_refinement_cli_flag_source_wired():
+    train_src = (ROOT / "rfdetr_video" / "train.py").read_text()
+    model_src = (ROOT / "rfdetr_video" / "model.py").read_text()
+    cfg_src = (ROOT / "rfdetr_video" / "config.py").read_text()
+
+    assert '--no-refinement' in train_src
+    assert "refinement_enabled=not args.no_refinement" in train_src
+    assert "refinement_enabled: bool = True" in cfg_src
+    assert 'getattr(self.cfg, "refinement_enabled", True)' in model_src
+
+
+def test_no_stfs_cli_flag_source_wired():
+    train_src = (ROOT / "rfdetr_video" / "train.py").read_text()
+    model_src = (ROOT / "rfdetr_video" / "model.py").read_text()
+    cfg_src = (ROOT / "rfdetr_video" / "config.py").read_text()
+
+    assert '--no-stfs' in train_src
+    assert "stfs_enabled=not args.no_stfs" in train_src
+    assert "stfs_enabled: bool = True" in cfg_src
+    assert 'getattr(self.cfg, "stfs_enabled", True)' in model_src
+    assert "--no-stfs cannot be combined with --stfs-feature-align" in train_src
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -235,6 +263,49 @@ def test_forward_shapes():
     assert model._captured_stfs_hs.shape[:3] == (B, T, Q)
     assert model._captured_stfs_mask is not None
     assert model._captured_stfs_mask.shape == (B, T, Q)
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_forward_without_refinement_uses_first_pass():
+    from rfdetr_video.model import VideoRFDETR
+
+    cfg = Config(batch_size=1, T=3, img_size=384, distill_enabled=False,
+                 consistency_enabled=False, refinement_enabled=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = VideoRFDETR(cfg).to(device).eval()
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    with torch.no_grad():
+        out = model(frames, query_mode="student")
+    torch.testing.assert_close(out["pred_logits"], out["first_pass"]["pred_logits"])
+    torch.testing.assert_close(out["pred_boxes"], out["first_pass"]["pred_boxes"])
+    assert model._captured_refined_hs is None
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_forward_without_stfs_skips_tracking(monkeypatch):
+    from rfdetr_video import model as video_model
+
+    def fail_stfs(*_args, **_kwargs):
+        raise AssertionError("STFS should not run when stfs_enabled=False")
+
+    monkeypatch.setattr(video_model, "track_queries", fail_stfs)
+    monkeypatch.setattr(video_model, "inject_features", fail_stfs)
+
+    cfg = Config(batch_size=1, T=3, img_size=384, distill_enabled=False,
+                 consistency_enabled=False, stfs_enabled=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = video_model.VideoRFDETR(cfg).to(device).eval()
+    assert model.stfs_aggregator is None
+    assert model.stfs_shifter is None
+
+    frames = torch.randn(1, cfg.T, 3, cfg.img_size, cfg.img_size, device=device)
+    with torch.no_grad():
+        out = model(frames, query_mode="student")
+    assert torch.isfinite(out["pred_logits"]).all()
+    assert model._captured_stfs_hs is None
+    assert model._captured_stfs_mask is None
+    assert model._captured_refined_hs is not None
 
 
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
