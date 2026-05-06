@@ -33,7 +33,12 @@ from .dataset import get_video_dataloader
 from .model import VideoRFDETR, build_criterion
 from .evaluate import evaluate
 from .consistency import num_consistency_loss
-from .distill import VideoFrozenRFDETRTeacher, distillation_loss, CRRCDLoss
+from .distill import (
+    VideoFrozenRFDETRTeacher,
+    distillation_loss,
+    CRRCDLoss,
+    stfs_feature_alignment_loss,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -163,6 +168,18 @@ def train(cfg: Config):
                 f"τ={cfg.crrcd_temperature}, β={cfg.crrcd_loss_weight}"
             )
 
+    if cfg.distill_enabled:
+        print(
+            f"[KD] distill_through_refine={cfg.distill_through_refine} "
+            f"distill_centre_frame_only={cfg.distill_centre_frame_only} "
+            f"stfs_feature_align={cfg.stfs_feature_align_enabled} "
+            f"stfs_feature_align_weight={cfg.stfs_feature_align_weight}"
+        )
+    print(
+        f"[Video] stfs_enabled={cfg.stfs_enabled} "
+        f"refinement_enabled={cfg.refinement_enabled}"
+    )
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
     print(f"Trainable params: {n_params:,} / {n_total:,} total")
@@ -240,20 +257,62 @@ def train(cfg: Config):
                     loss = loss + cfg.consistency_weight * loss_num
                     loss_dict["loss_num"] = loss_num.detach()
 
+                stfs_hs = model._captured_stfs_hs
+                stfs_mask = model._captured_stfs_mask
+
                 # ── Branch 2: CRRCD + KD specific (per-frame) ─────
                 if cfg.distill_enabled:
-                    teacher_frames_bt5 = teacher_frames  # (B, T, 3, S, S)
+                    # E2: optionally restrict KD/CRRCD to the centre frame
+                    # so the 2D teacher does not penalise temporal-only
+                    # detections produced by Branch 1 (full-T STFS).
+                    if cfg.distill_centre_frame_only:
+                        c = T // 2
+                        kd_images = images[:, c:c + 1].contiguous()
+                        kd_teacher_frames = teacher_frames[:, c:c + 1].contiguous()
+                    else:
+                        kd_images = images
+                        kd_teacher_frames = teacher_frames
                     with torch.no_grad():
-                        t_out = teacher.forward_video(teacher_frames_bt5)
+                        t_out = teacher.forward_video(kd_teacher_frames)
+                    if (
+                        cfg.stfs_feature_align_enabled
+                        and stfs_hs is not None
+                        and "decoder_hs" in t_out
+                    ):
+                        if cfg.distill_centre_frame_only:
+                            align_student_hs = stfs_hs[:, c:c + 1]
+                            align_mask = (
+                                stfs_mask[:, c:c + 1]
+                                if stfs_mask is not None else None
+                            )
+                        else:
+                            align_student_hs = stfs_hs
+                            align_mask = stfs_mask
+                        loss_stfs_align = stfs_feature_alignment_loss(
+                            align_student_hs,
+                            t_out["decoder_hs"],
+                            stfs_mask=align_mask,
+                            teacher_weights=t_out.get("foreground_weight"),
+                            teacher_topk=int(cfg.stfs_feature_align_teacher_topk),
+                        )
+                        loss = loss + cfg.stfs_feature_align_weight * loss_stfs_align
+                        loss_dict["loss_stfs_align"] = loss_stfs_align.detach()
                     student_kd_spec = model(
-                        images,
+                        kd_images,
                         query_mode="teacher",
                         decoder_inputs={
                             "tgt": t_out["decoder_tgt"],            # (BT, Q, D)
                             "refpoints": t_out["decoder_refpoints"],
                         },
                     )
-                    student_hs_spec = model._captured_decoder_hs   # (BT, Q, D)
+                    # E1: when KD goes through refinement, CRRCD must
+                    # hook the post-refine hidden state (the actual
+                    # head input at inference). Otherwise fall back to
+                    # the pre-refine decoder output.
+                    if cfg.distill_through_refine:
+                        student_hs_spec = model._captured_refined_hs
+                    else:
+                        student_hs_spec = model._captured_decoder_hs
                     distill_spec = distillation_loss(
                         student_kd_spec, t_out, cfg,
                     )
@@ -280,14 +339,21 @@ def train(cfg: Config):
                     gen_q = model.sample_general_queries(
                         Q_g, device=device, dtype=images.dtype,
                     )
+                    if cfg.distill_centre_frame_only:
+                        c = T // 2
+                        gen_images = images[:, c:c + 1].contiguous()
+                        gen_teacher_frames = teacher_frames[:, c:c + 1].contiguous()
+                    else:
+                        gen_images = images
+                        gen_teacher_frames = teacher_frames
                     with torch.no_grad():
                         t_out_gen = teacher.forward_video_general(
-                            teacher_frames,
+                            gen_teacher_frames,
                             gen_q["refpoint"], gen_q["query_feat"],
                             min_weight=cfg.distill_general_min_weight,
                         )
                     student_kd_gen = model(
-                        images,
+                        gen_images,
                         query_mode="general",
                         general_queries=gen_q,
                         decoder_inputs={
@@ -436,6 +502,9 @@ def parse_args():
     p.add_argument("--output-dir", type=str, default="rfdetr_video/runs")
     p.add_argument("--run-name", type=str, default=None)
     p.add_argument("--freeze-decoder", action="store_true")
+    p.add_argument("--no-refinement", action="store_true",
+                   help="Disable the student refinement layer and train/eval "
+                        "directly on first-pass decoder predictions.")
     p.add_argument("--no-wandb", action="store_true")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--grad-accum", type=int, default=2)
@@ -453,8 +522,22 @@ def parse_args():
     p.add_argument("--crrcd-num-bg", type=int, default=None)
     p.add_argument("--crrcd-num-negatives", type=int, default=None)
     p.add_argument("--crrcd-temperature", type=float, default=None)
+    # E1 / E2: where KD/CRRCD lands in the video pipeline.
+    p.add_argument("--distill-through-refine", action="store_true",
+                   help="E1: route KD branches through the refinement layer "
+                        "and capture CRRCD on the post-refine hidden state.")
+    p.add_argument("--distill-centre-frame-only", action="store_true",
+                   help="E2: restrict KD/CRRCD branches to the centre frame "
+                        "of each window (T_kd=1).")
+    p.add_argument("--stfs-feature-align", action="store_true",
+                   help="Align Branch-1 STFS-injected embeddings to the "
+                        "teacher decoder feature space (nearest-cosine).")
+    p.add_argument("--stfs-feature-align-weight", type=float, default=None)
+    p.add_argument("--stfs-feature-align-teacher-topk", type=int, default=None)
 
     # STFS knobs
+    p.add_argument("--no-stfs", action="store_true",
+                   help="Fully skip STFS tracking/injection in student mode.")
     p.add_argument("--stfs-iou-weight", type=float, default=None)
     p.add_argument("--stfs-l1-weight", type=float, default=None)
     p.add_argument("--stfs-cls-weight", type=float, default=None)
@@ -467,12 +550,14 @@ def parse_args():
                    help="Disable FeatureAggregator; revert to hard torch.where blend.")
     p.add_argument("--stfs-aggregator-heads", type=int, default=None)
     p.add_argument("--stfs-aggregator-dropout", type=float, default=None)
-    # Proposal-shift refpoint compensator
+    # Proposal-shift refpoint grid
     p.add_argument("--no-stfs-shifter", action="store_true",
-                   help="Disable RefPointShift; revert to direct source refpoint copy.")
+                   help="Disable 5-point proposal-shift grid; revert to "
+                        "direct source refpoint copy.")
     p.add_argument("--stfs-shifter-padding-alpha", type=float, default=None,
-                   help="wh expansion factor (default 1.5, STQD-Det uses 2.0).")
-    p.add_argument("--stfs-shifter-hidden-dim", type=int, default=None)
+                   help="5-point grid wh expansion factor (default 1.5).")
+    p.add_argument("--stfs-shifter-hidden-dim", type=int, default=None,
+                   help="Deprecated; ignored by deterministic RefPointShift.")
 
     # Consistency
     p.add_argument("--consistency-weight", type=float, default=None)
@@ -498,7 +583,12 @@ def parse_args():
     p.add_argument("--temporal-dropout-neighbour-p", type=float, default=None)
     p.add_argument("--temporal-dropout-radius", type=int, default=None)
     p.add_argument("--temporal-dropout-noise-std", type=float, default=None)
-    return p.parse_args()
+    args = p.parse_args()
+    if args.no_refinement and args.distill_through_refine:
+        p.error("--no-refinement cannot be combined with --distill-through-refine")
+    if args.no_stfs and args.stfs_feature_align:
+        p.error("--no-stfs cannot be combined with --stfs-feature-align")
+    return args
 
 
 def _maybe(d, k, v, cast=lambda x: x):
@@ -517,6 +607,8 @@ if __name__ == "__main__":
         T=args.T,
         rfdetr_checkpoint=args.checkpoint,
         freeze_decoder=args.freeze_decoder,
+        refinement_enabled=not args.no_refinement,
+        stfs_enabled=not args.no_stfs,
         wandb_enabled=not args.no_wandb,
         run_name=args.run_name,
         num_workers=args.num_workers,
@@ -530,6 +622,19 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "distill_teacher_ckpt", args.distill_teacher_ckpt, str)
     if args.crrcd:
         cfg_kwargs["crrcd_enabled"] = True
+    if args.distill_through_refine:
+        cfg_kwargs["distill_through_refine"] = True
+    if args.distill_centre_frame_only:
+        cfg_kwargs["distill_centre_frame_only"] = True
+    if args.stfs_feature_align:
+        cfg_kwargs["stfs_feature_align_enabled"] = True
+    _maybe(cfg_kwargs, "stfs_feature_align_weight", args.stfs_feature_align_weight, float)
+    _maybe(
+        cfg_kwargs,
+        "stfs_feature_align_teacher_topk",
+        args.stfs_feature_align_teacher_topk,
+        int,
+    )
     _maybe(cfg_kwargs, "crrcd_loss_weight", args.crrcd_weight, float)
     _maybe(cfg_kwargs, "crrcd_num_fg", args.crrcd_num_fg, int)
     _maybe(cfg_kwargs, "crrcd_num_bg", args.crrcd_num_bg, int)

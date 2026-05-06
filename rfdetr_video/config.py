@@ -59,6 +59,12 @@ class Config:
     seed: int = 42
     amp: bool = True
 
+    # ── Video refinement ───────────────────────────────────────────────
+    # Warm-init extra decoder layer after STFS. Disable for first-pass
+    # ablations/training where final predictions should come directly
+    # from the base RF-DETR decoder output.
+    refinement_enabled: bool = True
+
     # ── KD-DETR distillation (specific + general sampling) ────────────
     distill_enabled: bool = False
     distill_teacher_ckpt: str = (
@@ -79,6 +85,22 @@ class Config:
     distill_general_loss_weight: float = 0.5
     distill_general_min_weight: float = 0.1
     distill_general_query_std: float = 0.02
+    # E1: route KD branches through the refinement layer so the teacher's
+    # knowledge lands on the post-refinement tensors that drive inference.
+    # STFS stays bypassed in KD branches to preserve 1:1 teacher↔student
+    # slot alignment required by KD-DETR consistent distillation points.
+    distill_through_refine: bool = False
+    # E2: restrict KD/CRRCD branches to the centre frame of each window
+    # so the 2D teacher does not penalise temporal-only detections that
+    # the video model is designed to make on H-FN frames.
+    distill_centre_frame_only: bool = False
+    # Teacher-guided STFS feature alignment: Branch 1 aligns injected
+    # STFS embeddings against teacher decoder_hs without assuming slot
+    # identity. This regularises FeatureAggregator outputs before the
+    # refinement layer sees them.
+    stfs_feature_align_enabled: bool = False
+    stfs_feature_align_weight: float = 0.1
+    stfs_feature_align_teacher_topk: int = 16
 
     # ── CRRCD: per-frame relational contrastive distillation ──────────
     crrcd_enabled: bool = False
@@ -91,6 +113,9 @@ class Config:
     crrcd_temperature: float = 0.1
 
     # ── STFS: Query-Level Spatio-Temporal Feature Sharing ─────────────
+    # Disable to fully bypass track_queries/inject_features and train/eval
+    # the student on plain per-frame decoder queries.
+    stfs_enabled: bool = True
     # Per-frame Hungarian tracking cost weights: c = w_iou·(1-IoU) +
     # w_l1·L1(centres) + w_cls·(1 - class_prob).
     stfs_iou_weight: float = 2.0
@@ -116,14 +141,15 @@ class Config:
     stfs_aggregator_heads: int = 8
     stfs_aggregator_dropout: float = 0.0
 
-    # ── Proposal-Shift refpoint compensation (PSSTT-style) ────────────
+    # ── Proposal-Shift refpoint grid (PSSTT-style) ───────────────────
     # When enabled, H-FN slot refpoints are taken from the strong source
-    # frame, expanded by ``stfs_shifter_padding_alpha`` (analogous to
-    # STQD-Det's α=2 padding coefficient) and adjusted by a small
-    # learnable Δcxcywh predicted from (weak_emb, strong_emb, strong_ref).
+    # frame, expanded by ``stfs_shifter_padding_alpha``, and converted to
+    # a deterministic 5-point grid (centre/up/down/left/right). The
+    # refinement layer cross-attends to these visual hypotheses instead
+    # of relying on a blind MLP Δcxcywh regressor.
     stfs_shifter_enabled: bool = True
     stfs_shifter_padding_alpha: float = 1.5
-    stfs_shifter_hidden_dim: Optional[int] = None  # default: hidden_dim
+    stfs_shifter_hidden_dim: Optional[int] = None  # deprecated/ignored
 
     # ── Multi-frame count consistency loss (L_num) ───────────────────
     consistency_enabled: bool = True

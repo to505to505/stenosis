@@ -1,0 +1,35 @@
+Video RF-DETR module-importance ablation: stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/stfs_crrcd_v6_etf_postref_centreKD_stfsAlign_stfsShifter
+
+MICRO pooled metrics on cadica_50plus_new
+
+variant                              AP30     AP50       F1        P        R
+------------------------------------------------------------------------------
+final                              0.3997   0.1159   0.2441   0.3207   0.1970
+first_pass                         0.3282   0.0814   0.2329   0.2856   0.1966
+refine_no_stfs                     0.4044   0.1155   0.2436   0.3200   0.1966
+no_etf_final                       0.2805   0.0824   0.2020   0.1934   0.2115
+no_etf_first_pass                  0.2420   0.0687   0.1929   0.1732   0.2176
+no_etf_refine_no_stfs              0.2833   0.0816   0.2011   0.1925   0.2106
+stfs_no_aggregator                 0.4037   0.1185   0.2474   0.3252   0.1996
+stfs_no_shifter                    0.3922   0.1132   0.2414   0.3172   0.1948
+stfs_no_candidate_refine           0.4059   0.1180   0.2457   0.3229   0.1983
+stfs_legacy_no_agg_no_shift        0.4003   0.1139   0.2408   0.3165   0.1944
+
+Importance deltas (positive means the module helps final/AP metric)
+
+module                              dAP30    dAP50      dF1
+--------------------------------------------------------------
+ETF                                0.1192   0.0335   0.0421
+ETF on first pass                  0.0863   0.0127   0.0400
+refinement only                    0.0761   0.0341   0.0107
+STFS net                          -0.0047   0.0005   0.0005
+STFS aggregator                   -0.0040  -0.0026  -0.0033
+STFS shifter                       0.0075   0.0028   0.0027
+5-candidate refinement            -0.0062  -0.0020  -0.0016
+aggregator+shifter stack          -0.0006   0.0021   0.0033
+
+Track stats
+
+normal: {"avg_centre_injected_slots_per_window": 0.019206939281288724, "avg_injected_slots_per_window": 0.1579925650557621, "avg_tracks_per_window": 0.1406443618339529, "best_t_counts": {"0": 42, "1": 51, "2": 56, "3": 42, "4": 36}, "window_any_injection_rate": 0.09913258983890955, "window_centre_injection_rate": 0.019206939281288724, "windows": 1614}
+no_etf: {"avg_centre_injected_slots_per_window": 0.0080545229244114, "avg_injected_slots_per_window": 0.05080545229244114, "avg_tracks_per_window": 0.03283767038413878, "best_t_counts": {"0": 11, "1": 11, "2": 15, "3": 10, "4": 6}, "window_any_injection_rate": 0.027881040892193308, "window_centre_injection_rate": 0.0080545229244114, "windows": 1614}

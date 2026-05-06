@@ -20,7 +20,7 @@ import torch
 
 from rfdetr_video.config import Config
 from rfdetr_video.consistency import num_consistency_loss
-from rfdetr_video.stfs import track_queries, inject_features
+from rfdetr_video.stfs import track_queries, inject_features, RefPointShift
 
 
 HEAVY = os.environ.get("RFDETR_VIDEO_HEAVY") == "1"
@@ -59,14 +59,42 @@ def test_constraint_checklist():
     # STFS + refinement integration.
     assert "track_queries" in src and "inject_features" in src
     assert "_refinement_pass" in src
+    assert "stfs_enabled" in src
+    assert "refinement_enabled" in src
     # KD branches present.
     assert 'query_mode == "teacher"' in src
     assert '"general"' in src
     # Refinement layer is a deepcopy (warm-init).
-    assert "copy.deepcopy(self.transformer.decoder.layers[-1])" in src
+    assert (
+        "copy.deepcopy(self.transformer.decoder.layers[-1])" in src
+        or "copy.deepcopy(\n                self.transformer.decoder.layers[-1]" in src
+    )
 
     # Consistency loss penalises flickering.
     assert callable(num_consistency_loss)
+
+
+def test_no_refinement_cli_flag_source_wired():
+    train_src = (ROOT / "rfdetr_video" / "train.py").read_text()
+    model_src = (ROOT / "rfdetr_video" / "model.py").read_text()
+    cfg_src = (ROOT / "rfdetr_video" / "config.py").read_text()
+
+    assert '--no-refinement' in train_src
+    assert "refinement_enabled=not args.no_refinement" in train_src
+    assert "refinement_enabled: bool = True" in cfg_src
+    assert 'getattr(self.cfg, "refinement_enabled", True)' in model_src
+
+
+def test_no_stfs_cli_flag_source_wired():
+    train_src = (ROOT / "rfdetr_video" / "train.py").read_text()
+    model_src = (ROOT / "rfdetr_video" / "model.py").read_text()
+    cfg_src = (ROOT / "rfdetr_video" / "config.py").read_text()
+
+    assert '--no-stfs' in train_src
+    assert "stfs_enabled=not args.no_stfs" in train_src
+    assert "stfs_enabled: bool = True" in cfg_src
+    assert 'getattr(self.cfg, "stfs_enabled", True)' in model_src
+    assert "--no-stfs cannot be combined with --stfs-feature-align" in train_src
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -167,6 +195,26 @@ def test_stfs_no_tracks_for_low_confidence():
     assert torch.allclose(new_ref, refs)
 
 
+def test_refpoint_shift_generates_five_point_grid():
+    """RefPointShift should be deterministic, not an MLP Δ regressor."""
+    shifter = RefPointShift(d_model=16, padding_alpha=2.0)
+    cur = torch.zeros(1, 16)
+    src = torch.zeros(1, 16)
+    src_ref = torch.tensor([[0.5, 0.5, 0.2, 0.4]])
+
+    candidates = shifter(cur, src, src_ref)
+    assert candidates.shape == (1, 5, 4)
+    assert sum(p.numel() for p in shifter.parameters()) == 0
+
+    expected_wh = torch.tensor([[0.4, 0.8]]).expand(5, 2)
+    assert torch.allclose(candidates[0, :, 2:], expected_wh)
+    assert torch.allclose(candidates[0, 0, :2], torch.tensor([0.5, 0.5]))
+    assert candidates[0, 1, 1] < candidates[0, 0, 1]  # up
+    assert candidates[0, 2, 1] > candidates[0, 0, 1]  # down
+    assert candidates[0, 3, 0] < candidates[0, 0, 0]  # left
+    assert candidates[0, 4, 0] > candidates[0, 0, 0]  # right
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  4. Dataset
 # ─────────────────────────────────────────────────────────────────────
@@ -211,6 +259,79 @@ def test_forward_shapes():
     assert out["pred_boxes"].shape == (B, T, Q, 4)
     assert "first_pass" in out
     assert out["first_pass"]["pred_logits"].shape[:3] == (B, T, Q)
+    assert model._captured_stfs_hs is not None
+    assert model._captured_stfs_hs.shape[:3] == (B, T, Q)
+    assert model._captured_stfs_mask is not None
+    assert model._captured_stfs_mask.shape == (B, T, Q)
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_forward_without_refinement_uses_first_pass():
+    from rfdetr_video.model import VideoRFDETR
+
+    cfg = Config(batch_size=1, T=3, img_size=384, distill_enabled=False,
+                 consistency_enabled=False, refinement_enabled=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = VideoRFDETR(cfg).to(device).eval()
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    with torch.no_grad():
+        out = model(frames, query_mode="student")
+    torch.testing.assert_close(out["pred_logits"], out["first_pass"]["pred_logits"])
+    torch.testing.assert_close(out["pred_boxes"], out["first_pass"]["pred_boxes"])
+    assert model._captured_refined_hs is None
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_forward_without_stfs_skips_tracking(monkeypatch):
+    from rfdetr_video import model as video_model
+
+    def fail_stfs(*_args, **_kwargs):
+        raise AssertionError("STFS should not run when stfs_enabled=False")
+
+    monkeypatch.setattr(video_model, "track_queries", fail_stfs)
+    monkeypatch.setattr(video_model, "inject_features", fail_stfs)
+
+    cfg = Config(batch_size=1, T=3, img_size=384, distill_enabled=False,
+                 consistency_enabled=False, stfs_enabled=False)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = video_model.VideoRFDETR(cfg).to(device).eval()
+    assert model.stfs_aggregator is None
+    assert model.stfs_shifter is None
+
+    frames = torch.randn(1, cfg.T, 3, cfg.img_size, cfg.img_size, device=device)
+    with torch.no_grad():
+        out = model(frames, query_mode="student")
+    assert torch.isfinite(out["pred_logits"]).all()
+    assert model._captured_stfs_hs is None
+    assert model._captured_stfs_mask is None
+    assert model._captured_refined_hs is not None
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="AMP path requires CUDA")
+def test_forward_sparse_refinement_amp_dtype():
+    """AMP student forward must not fail assigning 5-point candidates."""
+    from rfdetr_video.model import VideoRFDETR
+
+    cfg = Config(
+        batch_size=1,
+        T=3,
+        img_size=384,
+        distill_enabled=False,
+        consistency_enabled=False,
+        stfs_track_score_thresh=0.0,
+        stfs_match_iou_thresh=1.1,
+        stfs_min_track_len=1,
+    )
+    device = torch.device("cuda")
+    model = VideoRFDETR(cfg).to(device).train()
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    with torch.cuda.amp.autocast(enabled=True):
+        out = model(frames, query_mode="student")
+    assert torch.isfinite(out["pred_logits"]).all()
+    assert model._captured_stfs_mask is not None and model._captured_stfs_mask.any()
 
 
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
@@ -267,3 +388,381 @@ def test_crrcd_per_frame():
     loss.backward()
     assert student_hs.grad is not None and student_hs.grad.abs().sum().item() > 0
     assert teacher_hs.grad is None
+
+
+def test_stfs_feature_alignment_loss_masked_topk():
+    """STFS feature alignment uses selected slots and teacher top-k only."""
+    from rfdetr_video.distill import stfs_feature_alignment_loss
+
+    B, T, Q, Qt, D = 1, 2, 4, 6, 16
+    student_hs = torch.randn(B, T, Q, D, requires_grad=True)
+    teacher_hs = torch.randn(B * T, Qt, D)
+    teacher_weights = torch.zeros(B * T, Qt)
+    teacher_weights[:, :2] = 1.0
+    stfs_mask = torch.zeros(B, T, Q, dtype=torch.bool)
+    stfs_mask[:, :, 1] = True
+
+    loss = stfs_feature_alignment_loss(
+        student_hs,
+        teacher_hs,
+        stfs_mask=stfs_mask,
+        teacher_weights=teacher_weights,
+        teacher_topk=2,
+    )
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert student_hs.grad is not None
+    assert student_hs.grad[:, :, 1].abs().sum().item() > 0
+    assert student_hs.grad[:, :, 0].abs().sum().item() == 0
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_distill_one_step():
+    """End-to-end one training step exercising the three KD branches.
+
+    Mirrors :func:`rfdetr_video.train.train`'s inner loop (Branch 1 det,
+    Branch 2 KD-spec + CRRCD, Branch 3 KD-general). Asserts:
+
+      • Refinement layer receives gradient (Branch 1).
+      • ETF receives gradient (Branch 1 + 2 + 3 — applied in all modes).
+      • CRRCD relation MLPs receive gradient (Branch 2 only).
+      • Teacher params have ``.grad is None`` everywhere.
+    """
+    teacher_ckpt = ROOT / "rfdetr_runs" / "rfdetr_large_arcade2x_704_reg" \
+        / "checkpoint_best_total.pth"
+    if not teacher_ckpt.exists():
+        pytest.skip(f"Teacher checkpoint not available: {teacher_ckpt}")
+
+    from rfdetr_video.model import VideoRFDETR, build_criterion
+    from rfdetr_video.distill import (
+        VideoFrozenRFDETRTeacher,
+        distillation_loss,
+        CRRCDLoss,
+        stfs_feature_alignment_loss,
+    )
+    from rfdetr_video.train import _flatten_targets, _flatten_predictions
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    cfg = Config(
+        batch_size=1,
+        T=3,
+        img_size=384,
+        distill_teacher_resolution=384,   # smaller HR to keep VRAM sane in test
+        distill_enabled=True,
+        distill_general_enabled=True,
+        distill_num_general_queries=16,
+        distill_num_queries=300,
+        crrcd_enabled=True,
+        crrcd_num_fg=4, crrcd_num_bg=8, crrcd_num_negatives=4,
+        consistency_enabled=True,
+        etf_enabled=True,
+        wandb_enabled=False,
+        stfs_feature_align_enabled=True,
+        stfs_feature_align_weight=0.1,
+        stfs_feature_align_teacher_topk=8,
+        stfs_track_score_thresh=0.0,
+        stfs_match_iou_thresh=1.1,
+        stfs_min_track_len=1,
+    )
+
+    model = VideoRFDETR(cfg).to(device).train()
+    criterion, _ = build_criterion(cfg)
+    criterion = criterion.to(device).train()
+
+    teacher = VideoFrozenRFDETRTeacher(cfg).to(device).eval()
+    model.register_teacher_queries(
+        teacher.refpoint_embed_weight, teacher.query_feat_weight,
+    )
+    crrcd_module = CRRCDLoss(
+        hidden_dim=int(teacher.hidden_dim),
+        relation_dim=int(cfg.crrcd_relation_dim),
+        frm_hidden_dim=int(cfg.crrcd_hidden_dim),
+        num_fg=int(cfg.crrcd_num_fg),
+        num_bg=int(cfg.crrcd_num_bg),
+        num_negatives=int(cfg.crrcd_num_negatives),
+        temperature=float(cfg.crrcd_temperature),
+    ).to(device)
+    model.crrcd = crrcd_module
+
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    teacher_frames = torch.randn(
+        B, T, 3, cfg.distill_teacher_resolution,
+        cfg.distill_teacher_resolution, device=device,
+    )
+    targets_list = [[
+        {"boxes": torch.tensor([[0.5, 0.5, 0.2, 0.2]], device=device),
+         "labels": torch.tensor([0], device=device)}
+        for _ in range(T)
+    ]]
+    targets_flat = _flatten_targets(targets_list, device, cfg.img_size)
+
+    # ── Branch 1 — student detection ─────────────────────────────────
+    out = model(frames, query_mode="student")
+    pred_flat = _flatten_predictions(out, B, T)
+    loss_dict = criterion(pred_flat, targets_flat)
+    loss = sum(
+        loss_dict[k] * criterion.weight_dict[k]
+        for k in loss_dict if k in criterion.weight_dict
+    )
+    loss = loss + cfg.consistency_weight * num_consistency_loss(
+        out["pred_logits"],
+        cfg.consistency_threshold,
+        cfg.consistency_soft_temp,
+    )
+    stfs_hs = model._captured_stfs_hs
+    stfs_mask = model._captured_stfs_mask
+    assert stfs_hs is not None
+    assert stfs_mask is not None and stfs_mask.any(), \
+        "forced STFS settings should create injected slots"
+
+    # ── Branch 2 — KD-specific + CRRCD ───────────────────────────────
+    with torch.no_grad():
+        t_out = teacher.forward_video(teacher_frames)
+    loss_stfs_align = stfs_feature_alignment_loss(
+        stfs_hs,
+        t_out["decoder_hs"],
+        stfs_mask=stfs_mask,
+        teacher_weights=t_out["foreground_weight"],
+        teacher_topk=cfg.stfs_feature_align_teacher_topk,
+    )
+    loss = loss + cfg.stfs_feature_align_weight * loss_stfs_align
+    s_kd_spec = model(
+        frames,
+        query_mode="teacher",
+        decoder_inputs={
+            "tgt": t_out["decoder_tgt"],
+            "refpoints": t_out["decoder_refpoints"],
+        },
+    )
+    student_hs_spec = model._captured_decoder_hs
+    assert student_hs_spec is not None, "student decoder hs must be captured"
+    distill_spec = distillation_loss(s_kd_spec, t_out, cfg)
+    loss = loss + cfg.distill_loss_weight * distill_spec["loss_distill"]
+    loss_rcd = crrcd_module(
+        teacher_hs=t_out["decoder_hs"],
+        student_hs=student_hs_spec,
+        weights=t_out["foreground_weight"],
+    )
+    loss = loss + cfg.crrcd_loss_weight * loss_rcd
+
+    # ── Branch 3 — KD-general ────────────────────────────────────────
+    gen_q = model.sample_general_queries(
+        cfg.distill_num_general_queries, device=device, dtype=frames.dtype,
+    )
+    with torch.no_grad():
+        t_out_gen = teacher.forward_video_general(
+            teacher_frames,
+            gen_q["refpoint"], gen_q["query_feat"],
+            min_weight=cfg.distill_general_min_weight,
+        )
+    s_kd_gen = model(
+        frames,
+        query_mode="general",
+        general_queries=gen_q,
+        decoder_inputs={
+            "tgt": t_out_gen["decoder_tgt"],
+            "refpoints": t_out_gen["decoder_refpoints"],
+        },
+    )
+    distill_gen = distillation_loss(s_kd_gen, t_out_gen, cfg)
+    loss = loss + (
+        cfg.distill_loss_weight * cfg.distill_general_loss_weight
+        * distill_gen["loss_distill"]
+    )
+
+    assert torch.isfinite(loss), f"loss is not finite: {loss.item()}"
+    loss.backward()
+
+    # Refine layer must receive gradient from Branch 1.
+    refine_grads = [
+        p.grad for p in model.refine_layer.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in refine_grads), \
+        "refinement layer must receive gradient"
+
+    # ETF must receive gradient (in *some* branch — typically all three).
+    etf_grads = [p.grad for p in model.etf.parameters() if p.grad is not None]
+    assert any(g.abs().sum().item() > 0 for g in etf_grads), \
+        "ETF must receive gradient via KD/det branches"
+
+    # FeatureAggregator should receive gradient through Branch-1 STFS
+    # feature alignment and detection refinement.
+    agg_grads = [
+        p.grad for p in model.stfs_aggregator.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in agg_grads), \
+        "FeatureAggregator must receive gradient with STFS alignment enabled"
+
+    # CRRCD relation MLPs must receive gradient.
+    crrcd_grads = [
+        p.grad for p in crrcd_module.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in crrcd_grads), \
+        "CRRCD relation MLPs must receive gradient"
+
+    # Teacher params must remain ungrad'd.
+    for n, p in teacher.named_parameters():
+        assert p.grad is None, f"teacher param '{n}' received gradient"
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+@pytest.mark.parametrize(
+    "through_refine,centre_only",
+    [(True, False), (True, True)],
+    ids=["E1", "E1+E2"],
+)
+def test_distill_through_refine_and_centre_only(through_refine, centre_only):
+    """E1/E2 — KD branches routed through the refinement layer and
+    optionally restricted to the centre frame.
+
+    Asserts:
+      • Refinement layer receives gradient from the KD branch alone
+        (Branch 1 detection loss is omitted from this test, so any
+        gradient on ``refine_layer`` must come from KD post-refine).
+      • CRRCD relation MLPs receive gradient using
+        ``model._captured_refined_hs`` as the student source.
+      • Teacher params have ``.grad is None``.
+      • Centre-frame variant: KD spec/general predictions have
+        ``BT == B * 1`` (T_kd collapsed to 1).
+    """
+    teacher_ckpt = ROOT / "rfdetr_runs" / "rfdetr_large_arcade2x_704_reg" \
+        / "checkpoint_best_total.pth"
+    if not teacher_ckpt.exists():
+        pytest.skip(f"Teacher checkpoint not available: {teacher_ckpt}")
+
+    from rfdetr_video.model import VideoRFDETR
+    from rfdetr_video.distill import (
+        VideoFrozenRFDETRTeacher,
+        distillation_loss,
+        CRRCDLoss,
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    cfg = Config(
+        batch_size=1,
+        T=3,
+        img_size=384,
+        distill_teacher_resolution=384,
+        distill_enabled=True,
+        distill_general_enabled=True,
+        distill_num_general_queries=16,
+        distill_num_queries=300,
+        crrcd_enabled=True,
+        crrcd_num_fg=4, crrcd_num_bg=8, crrcd_num_negatives=4,
+        consistency_enabled=True,
+        etf_enabled=True,
+        wandb_enabled=False,
+        distill_through_refine=through_refine,
+        distill_centre_frame_only=centre_only,
+    )
+
+    model = VideoRFDETR(cfg).to(device).train()
+    teacher = VideoFrozenRFDETRTeacher(cfg).to(device).eval()
+    model.register_teacher_queries(
+        teacher.refpoint_embed_weight, teacher.query_feat_weight,
+    )
+    crrcd_module = CRRCDLoss(
+        hidden_dim=int(teacher.hidden_dim),
+        relation_dim=int(cfg.crrcd_relation_dim),
+        frm_hidden_dim=int(cfg.crrcd_hidden_dim),
+        num_fg=int(cfg.crrcd_num_fg),
+        num_bg=int(cfg.crrcd_num_bg),
+        num_negatives=int(cfg.crrcd_num_negatives),
+        temperature=float(cfg.crrcd_temperature),
+    ).to(device)
+    model.crrcd = crrcd_module
+
+    B, T = 1, cfg.T
+    frames = torch.randn(B, T, 3, cfg.img_size, cfg.img_size, device=device)
+    teacher_frames = torch.randn(
+        B, T, 3, cfg.distill_teacher_resolution,
+        cfg.distill_teacher_resolution, device=device,
+    )
+
+    if centre_only:
+        c = T // 2
+        kd_frames = frames[:, c:c + 1].contiguous()
+        kd_teacher = teacher_frames[:, c:c + 1].contiguous()
+        T_kd = 1
+    else:
+        kd_frames = frames
+        kd_teacher = teacher_frames
+        T_kd = T
+
+    # ── Branch 2: KD-spec + CRRCD ────────────────────────────────────
+    with torch.no_grad():
+        t_out = teacher.forward_video(kd_teacher)
+    s_kd_spec = model(
+        kd_frames,
+        query_mode="teacher",
+        decoder_inputs={
+            "tgt": t_out["decoder_tgt"],
+            "refpoints": t_out["decoder_refpoints"],
+        },
+    )
+    if through_refine:
+        student_hs_spec = model._captured_refined_hs
+    else:
+        student_hs_spec = model._captured_decoder_hs
+    assert student_hs_spec is not None, "student hs must be captured"
+    assert s_kd_spec["pred_logits"].shape[0] == B * T_kd, (
+        f"KD-spec pred_logits has BT={s_kd_spec['pred_logits'].shape[0]}, "
+        f"expected B*T_kd={B * T_kd}"
+    )
+    distill_spec = distillation_loss(s_kd_spec, t_out, cfg)
+    loss = cfg.distill_loss_weight * distill_spec["loss_distill"]
+    loss_rcd = crrcd_module(
+        teacher_hs=t_out["decoder_hs"],
+        student_hs=student_hs_spec,
+        weights=t_out["foreground_weight"],
+    )
+    loss = loss + cfg.crrcd_loss_weight * loss_rcd
+
+    # ── Branch 3: KD-general ─────────────────────────────────────────
+    gen_q = model.sample_general_queries(
+        cfg.distill_num_general_queries, device=device, dtype=frames.dtype,
+    )
+    with torch.no_grad():
+        t_out_gen = teacher.forward_video_general(
+            kd_teacher,
+            gen_q["refpoint"], gen_q["query_feat"],
+            min_weight=cfg.distill_general_min_weight,
+        )
+    s_kd_gen = model(
+        kd_frames,
+        query_mode="general",
+        general_queries=gen_q,
+        decoder_inputs={
+            "tgt": t_out_gen["decoder_tgt"],
+            "refpoints": t_out_gen["decoder_refpoints"],
+        },
+    )
+    assert s_kd_gen["pred_logits"].shape[0] == B * T_kd, (
+        f"KD-gen pred_logits has BT={s_kd_gen['pred_logits'].shape[0]}, "
+        f"expected B*T_kd={B * T_kd}"
+    )
+    distill_gen = distillation_loss(s_kd_gen, t_out_gen, cfg)
+    loss = loss + (
+        cfg.distill_loss_weight * cfg.distill_general_loss_weight
+        * distill_gen["loss_distill"]
+    )
+
+    assert torch.isfinite(loss), f"loss is not finite: {loss.item()}"
+    loss.backward()
+
+    # E1: refine_layer must get grad from KD branch (Branch 1 omitted).
+    refine_grads = [
+        p.grad for p in model.refine_layer.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in refine_grads), \
+        "refinement layer must receive gradient from KD branch (E1)"
+
+    crrcd_grads = [
+        p.grad for p in crrcd_module.parameters() if p.grad is not None
+    ]
+    assert any(g.abs().sum().item() > 0 for g in crrcd_grads), \
+        "CRRCD relation MLPs must receive gradient"
+
+    for n, p in teacher.named_parameters():
+        assert p.grad is None, f"teacher param '{n}' received gradient"

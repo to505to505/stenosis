@@ -1,0 +1,357 @@
+================================================================================
+  WHY DOES DISTILLATION HELP rfdetr_video LESS THAN rfdetr_temporal?
+  Target metric: AP30 / AP50 on cadica_50plus_new (DOMAIN SHIFT)
+  Date: May 2026
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+0. METRIC FRAMING
+────────────────────────────────────────────────────────────────────────────────
+
+The student is trained on data/dataset2_split (arcade2x derivative).
+The teacher (RF-DETR-Large @ 704 px) is also trained on the same
+data but at higher capacity / resolution. The point of distillation
+in this project is OUT-OF-DISTRIBUTION generalisation to
+data/cadica_50plus_new — not in-domain (dataset2) accuracy.
+
+Numbers from _eval_cadica_unified.py (run 2026-05-04).
+MICRO = pooled over all 1614 centre frames (the primary metric).
+MACRO = per-video mean over 160 cadica_50plus_new videos (shown for
+reference; MACRO inflates scores for short/easy videos).
+
+────────────────────────────────────────────────────────────────────────────────
+1. EMPIRICAL EVIDENCE — domain shift (cadica_50plus_new, MICRO pooled)
+────────────────────────────────────────────────────────────────────────────────
+
+  Run                          MACRO                  MICRO
+                               AP30   AP50   F1        AP30   AP50   F1
+  ─────────────────────────────────────────────────────────────────────
+  temporal_nodistill (v1)      0.2631 0.1076 0.1570   0.1128 0.0227 0.0961
+  temporal_crrcd_cons_new      0.5292 0.2759 0.3299   0.4299 0.1343 0.2487
+  video_nodistill_v6_etf       0.3885 0.1683 0.2251   0.2251 0.0479 0.1549
+  video_crrcd_v6_etf           0.3683 0.1758 0.2258   0.2339 0.0527 0.1614
+  ─────────────────────────────────────────────────────────────────────
+
+  Distillation delta (MICRO):
+    temporal +CRRCD  AP30: +0.317 (+281 %)   AP50: +0.112 (+493 %)
+    video    +CRRCD  AP30: +0.009 ( +3.9 %)  AP50: +0.005 ( +10 %)
+
+  In-domain reference (dataset2_split test, MACRO/video):
+    stfs_nodistill_v6_etf  AP30=0.5459  AP50=0.3622
+    stfs_crrcd_v6_etf      AP30=0.5630  AP50=0.4113  +14 % AP50
+
+So on dataset2 (in-domain) the video distillation DOES help (+14 %
+AP50). On cadica_50plus_new (the metric that matters) it gives a
+~4 % AP30 / ~10 % AP50 MICRO lift — essentially noise — while
+temporal distillation gives +281 % AP30 / +493 % AP50 MICRO on
+the same dataset.
+
+Note: temporal_crrcd_cons_new is the best temporal run and had never
+been evaluated on cadica before. Its MICRO AP30=0.4299 is 1.84×
+the best video run (0.2339) despite the video model being designed
+for multi-frame detection. This makes the architecture gap clear.
+
+The signal is unambiguous: distillation in the video model improves
+in-domain fit but does NOT transfer the teacher's domain-robust
+appearance prior to the inference output. In the temporal model it
+transfers massively.
+
+1.1  Eval-only ablation evidence on existing video checkpoints
+
+Numbers from _eval_cadica_video_ablate.py (run 2026-05-04).
+All rows are cadica_50plus_new MICRO pooled over the same 1614
+centre frames. The script evaluates the existing best.pth files
+only; no retraining.
+
+  Run / variant                         AP30   AP50   F1
+  ─────────────────────────────────────────────────────────
+  video_nodistill final                 0.2251 0.0479 0.1549
+  video_nodistill first_pass            0.1983 0.0395 0.1421
+  video_nodistill refine_no_stfs        0.2264 0.0475 0.1556
+  video_nodistill no_etf_final          0.1868 0.0449 0.1412
+  video_nodistill no_etf_first_pass     0.1600 0.0314 0.1167
+  video_nodistill no_etf_refine_no_stfs 0.1879 0.0446 0.1415
+
+  video_crrcd final                     0.2339 0.0527 0.1614
+  video_crrcd first_pass                0.2288 0.0568 0.1605
+  video_crrcd refine_no_stfs            0.2383 0.0534 0.1668
+  video_crrcd no_etf_final              0.1972 0.0427 0.1375
+  video_crrcd no_etf_first_pass         0.1565 0.0341 0.1181
+  video_crrcd no_etf_refine_no_stfs     0.1976 0.0419 0.1356
+  ─────────────────────────────────────────────────────────
+
+Measured conclusions:
+
+  C1  The KD signal is visible before the final video inference path.
+    First-pass AP50 improves from 0.0395 → 0.0568 (+44 %) with
+    CRRCD/KD. That is much larger than the final-output AP50
+    improvement, 0.0479 → 0.0527 (+10 %).
+
+  C2  In the distilled checkpoint, first_pass AP50 is BETTER than
+    final AP50 (0.0568 vs 0.0527). In the no-distill checkpoint
+    the opposite is true: final beats first_pass (0.0479 vs
+    0.0395). This is the key failure mode: distillation improves
+    the pre-refinement path, but the final refined inference path
+    does not preserve that gain.
+
+  C3  STFS injection is a secondary issue, not the whole story.
+    Disabling STFS injection while keeping refinement gives the
+    best distilled video row (0.2383 AP30 / 0.0534 AP50), but the
+    gain over normal distilled final is small (+0.0044 AP30,
+    +0.0007 AP50). STFS slightly hurts the distilled model on
+    cadica, but removing STFS does not recover temporal-level
+    transfer.
+
+  C4  ETF is helpful, not the primary culprit. Disabling ETF hurts
+    both checkpoints: no-distill final drops 0.2251 → 0.1868 AP30;
+    distill final drops 0.2339 → 0.1972 AP30. The video model
+    relies on ETF for its stronger baseline behavior. The problem
+    is not that ETF makes the model bad; the problem is that KD and
+    CRRCD are not landing on the post-refinement output where the
+    final prediction is made.
+
+  C5  Distillation also increases STFS activity: normal track rate
+    rises from 0.450 to 0.547 tracks/window and any-injection rate
+    from 27.1 % to 31.8 %. Since STFS is not teacher-supervised,
+    this extra propagation can amplify small domain-shift errors,
+    but the measured effect is secondary to the pre/post-refinement
+    mismatch.
+
+────────────────────────────────────────────────────────────────────────────────
+2. WHY KD TRANSFERS IN TEMPORAL BUT NOT IN VIDEO
+────────────────────────────────────────────────────────────────────────────────
+
+The teacher's value on a domain-shift dataset is its appearance-
+robust feature → class probability mapping. KD's job is to inject
+that mapping into the modules that produce the final logits and
+boxes at inference. Whether KD helps under domain shift depends on
+WHICH STUDENT MODULES ARE STILL ON THE INFERENCE PATH AFTER they
+have been recalibrated by KD.
+
+2.1  Inference path divergence
+
+  TEMPORAL inference (= same as KD-branch path):
+    backbone(centre) → TemporalFusion(T → centre) → encoder/decoder
+    → class_embed/bbox_embed.
+
+    The KD branch trains class_embed/bbox_embed on EXACTLY the
+    decoder hidden state they consume at inference. The
+    recalibration transfers 1-to-1.
+
+  VIDEO inference path:
+    backbone(B*T) → ETF → encoder/decoder → first heads (B*T) →
+    STFS track + inject (FeatureAggregator + RefPointShift) →
+    refine_layer + refine_norm + refine_ref_point_head → SAME heads
+    → final logits / boxes.
+
+    The KD branches in train.py run only up to "first heads" — the
+    KD branches early-return at model.py line ~570:
+
+        if query_mode != 'student':
+            return out
+
+    Post-first-heads modules (refine_layer, refine_norm,
+    refine_ref_point_head, stfs_aggregator, stfs_shifter — together
+    ≈ 1.6 M params, including a deformable cross-attention layer)
+    are trained ONLY by the in-domain Hungarian loss on dataset2.
+
+    The eval-only ablation shows these post-first-heads modules are
+    not simply "bad": they improve the no-distill baseline. The
+    failure is more specific. KD/CRRCD improves the PRE-refinement
+    path strongly, but the final post-refinement stream is trained
+    only by in-domain detection loss and does not preserve the
+    teacher-induced domain-shift gain.
+
+    STFS injection is a measured secondary drag in the distilled
+    checkpoint: refine_no_stfs is slightly better than normal final.
+    But the effect is small, so the dominant problem is the mismatch
+    between where KD/CRRCD are applied and where final predictions
+    are produced.
+
+  Net effect: in TEMPORAL the KD-improved features ARE the inference
+  features. In VIDEO the KD-improved features are an intermediate
+  product. The model then routes through post-refinement machinery
+  that is not teacher-aligned, so much of the domain-shift gain is
+  diluted before it reaches the cadica predictions.
+
+2.2  Where KD lands in the encoder-side tower
+
+  TEMPORAL has ONE temporal-specific trainable block: TemporalFusion.
+  It sits right before the decoder, so KD gradient reaches it through
+  one decoder pass. The block learns to fuse T frames in a way that
+  produces the teacher-like decoder input.
+
+  VIDEO has ETF before the encoder/decoder. KD gradient reaches ETF
+  only through 6 decoder layers, then through the encoder, then
+  through ETF — heavily attenuated. The eval ablation shows ETF is
+  helpful for cadica accuracy, so it is not the main failure source.
+  The issue is that ETF is useful while the later KD/CRRCD target is
+  still pre-refinement, leaving the final refined stream weakly
+  teacher-aligned.
+
+2.3  CRRCD aligns the wrong relational geometry
+
+  rfdetr_video/model.py captures CRRCD's student_hs via forward_hook
+  on self.transformer.decoder → that is the PRE-refinement hs[-1].
+  The teacher's decoder_hs is the actual head input on the teacher.
+  On the student, the actual head input AT INFERENCE is
+  refine_norm(refine_layer(...)). CRRCD therefore optimises a
+  relational structure on a tensor the student does not use to
+  predict.
+
+  In TEMPORAL there is no refinement layer, so the captured hs IS
+  the head input at inference — CRRCD is consistent and contributes
+  to domain-shift transfer.
+
+2.4  Per-frame KD on T frames vs centre-frame KD on 1 frame
+
+  TEMPORAL teacher emits one set of predictions per sample (the
+  centre frame). KD effective batch = B = 4 (with bs=4). The KD
+  signal is sharply targeted at the centre frame only.
+
+  VIDEO teacher.forward_video emits T predictions per sample
+  (B*T = 10 with bs=2). KD averages over T per-frame teacher
+  predictions. Two side-effects:
+
+    ▸ Effective KD/det weighting is roughly T = 5× larger than in
+      TEMPORAL at the same distill_loss_weight=1.0 / crrcd_loss_
+      weight=2.0. Combined with bs=2 (vs bs=4 in temporal) the
+      gradient signal is also noisier.
+
+    ▸ The H-FN frames the student is supposed to win on (where the
+      static teacher fails by definition — it has no temporal
+      context) become a CONFLICTING signal: the student tries to
+      detect a lesion in the H-FN frame, the teacher says "no",
+      and KD penalises the student for the temporal-only detection.
+      Distillation here actively suppresses the unique capability
+      of the video architecture.
+
+2.5  Confound to keep in mind
+
+  Video distill runs use bs=2 (capped by HR teacher VRAM at 704 px
+  on a 12 GB GPU); the no-distill v6_etf reference uses bs=8.
+  Effective batches: 4 (distill) vs 16 (no-distill, with grad_accum=2).
+  Some of the dataset2 in-domain numbers reflect gradient noise;
+  on cadica the no-distill baseline is itself the strong run, so
+  the comparison is conservatively stacked AGAINST distillation.
+
+────────────────────────────────────────────────────────────────────────────────
+3. ROOT-CAUSE SUMMARY (ranked by suspected impact ON DOMAIN SHIFT)
+────────────────────────────────────────────────────────────────────────────────
+
+  R1  CONFIRMED: KD/CRRCD supervise the pre-refinement video path,
+      but the final inference output is post-refinement. The
+      first-pass distilled AP50 gain is +44 %, while the final-output
+      AP50 gain is only +10 %. In the distilled checkpoint, first_pass
+      AP50 is even higher than final AP50 (0.0568 vs 0.0527).
+      This is the main reason the video model does not transfer like
+      the temporal model.
+
+  R2  CONFIRMED: CRRCD captures pre-refinement hs, not the final
+      post-refinement hidden state consumed by the inference heads.
+      This aligns relational geometry on an intermediate tensor that
+      is not the final prediction tensor.
+
+  R3  MEASURED SECONDARY: STFS injection slightly hurts the distilled
+      cadica result. refine_no_stfs is the best video row, but only
+      by +0.0044 AP30 / +0.0007 AP50 over normal final. STFS is not
+      the dominant failure by itself.
+
+  R4  MOSTLY REFUTED AS MAIN CAUSE: ETF is helpful. Disabling ETF
+      lowers AP30 for both no-distill and distill checkpoints. ETF
+      remains part of the architecture that KD must pass through,
+      but the ablation does not support "ETF overfits and breaks
+      cadica" as the main explanation.
+
+  R5  STILL PLAUSIBLE / NOT ISOLATED: Per-frame KD signal multiplied
+      by T conflicts with the
+      H-FN-recovery purpose of STFS — KD penalises temporal-only
+      detections that the architecture is designed to make.
+
+  R6  Confound: bs=2 vs bs=8 makes the no-distill in-domain
+      reference stronger than it would be at matched batch size.
+
+────────────────────────────────────────────────────────────────────────────────
+4. EXPERIMENT PLAN — focused on cadica_50plus AP30/AP50
+────────────────────────────────────────────────────────────────────────────────
+
+All runs land in rfdetr_video/runs/. Compare cadica_50plus_new
+with MICRO pooled metrics via _eval_cadica_unified.py or targeted
+path ablations via _eval_cadica_video_ablate.py.
+
+  E5  DONE: eval-only path ablation on existing stfs_crrcd_v6_etf
+      Implemented in _eval_cadica_video_ablate.py.
+      Result: first_pass AP50=0.0568 > final AP50=0.0527 for the
+      distilled run. The KD signal is present before refinement but
+      is partly lost in the final path.
+
+  E6  DONE: STFS-off with refinement still on.
+      Result: refine_no_stfs AP30/AP50=0.2383/0.0534, slightly above
+      normal final 0.2339/0.0527. STFS is a secondary drag, not the
+      main bottleneck.
+
+  E7  DONE: ETF-off eval ablation.
+      Result: ETF-off hurts both no-distill and distill. This refutes
+      ETF as the main direct cause and shows the video baseline relies
+      on ETF for cadica performance.
+
+  E1  Distill the post-refinement hidden state (addresses R1, R3)
+      stfs_crrcd_v6_etf_postref
+      Code change in model.py:
+        • Add cfg.distill_through_refine: bool.
+        • In KD branches (query_mode != "student"), after the
+          first decoder pass, if distill_through_refine: run STFS
+          (track + inject) + refinement on the teacher-aligned
+          queries, then return refined logits/boxes/hs.
+        • Move CRRCD's _captured_decoder_hs assignment into the
+          refinement post-step so it captures refine_norm(...).
+      Predicted to be the largest single fix because it puts the
+      KD signal where the inference output is computed.
+
+  E2  Centre-frame KD only (addresses R5, partially R4)
+      stfs_crrcd_v6_etf_centreKD
+      In train.py Branch 2/3 use teacher_frames[:, T//2:T//2+1]
+      and images[:, T//2:T//2+1]. Backbone+ETF still see all T
+      frames (so STFS supervision in Branch 1 is unchanged), but
+      KD operates on a single frame per sample. Removes the H-FN
+      conflict and the T× weighting. Should also free VRAM →
+      bigger student batch.
+
+  E3  Halve KD weights (cheap regulariser of R5)
+      stfs_crrcd_v6_etf_kdhalf
+      distill_loss_weight=0.5, crrcd_loss_weight=1.0.
+
+  E4  Dual heads — separate class_embed_kd / bbox_embed_kd used
+      ONLY in KD branches; original heads keep consuming the
+      refined stream in Branch 1. Removes the head-distribution
+      conflict (R1) without re-running refinement on KD inputs.
+      KD heads are discarded at inference. Lighter-weight than E1.
+
+  E0  Apples-to-apples no-distill control at bs=2
+      stfs_nodistill_v6_etf_bs2
+      --batch-size 2 --grad-accum 8   (effective batch 16 unchanged)
+      Quantifies the bs confound on the cadica metric.
+
+Suggested next order after the completed eval ablations:
+  E1 → E2 → E4 → E3 → E0.
+
+The highest-value next training experiment is E1: put KD/CRRCD on
+the post-refinement output. E2 is the next-best cheap change because
+it removes the per-frame KD / H-FN conflict and may allow a larger
+student batch.
+
+────────────────────────────────────────────────────────────────────────────────
+5. ONE-LINE TAKEAWAY (domain-shift target metric)
+────────────────────────────────────────────────────────────────────────────────
+
+In rfdetr_temporal the teacher's domain-robust class/box knowledge
+lands on exactly the modules used at inference, so KD + CRRCD gives
++281 % MICRO AP30 / +493 % MICRO AP50 on cadica_50plus_new (pooled
+over 1614 centre frames: 0.4299 vs 0.1128 AP30). In rfdetr_video
+the teacher's knowledge lands on a PRE-refinement intermediate path:
+the measured first-pass AP50 gain is strong (+44 %), but the final
+post-refinement AP50 gain is only +10 %, and distilled first_pass
+AP50 is higher than distilled final AP50 (0.0568 vs 0.0527). ETF is
+helpful and STFS is only a small secondary drag. The fix is to put
+KD/CRRCD on the POST-refinement output, not on the pre-refinement
+decoder output.
