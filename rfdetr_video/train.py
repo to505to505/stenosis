@@ -1,11 +1,10 @@
-"""Training loop for the Video / STFS RF-DETR.
+"""Training loop for Video RF-DETR.
 
 Mirrors the argparse surface of :mod:`rfdetr_temporal.train` for the
 flags that still apply (``--num-general-queries``, ``--crrcd*``,
 ``--consistency-weight``). Removed flags (``--neighborhood-k``,
 ``--cpc*``, ``--temporal-dropout*``, ``--consistency-{offset,top-k,
-kl-weight,l1-weight}``, ``--temporal-layers``) are no longer relevant
-to the new architecture and are documented as removed.
+kl-weight,l1-weight}``, ``--temporal-layers``) are no longer relevant.
 """
 
 from __future__ import annotations
@@ -24,6 +23,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.cuda.amp import GradScaler, autocast
+from rfdetr.utilities.dynamic_batch_resize import (
+    choose_dynamic_batch_size,
+    resize_tensor_batch,
+)
 
 os.environ["WANDB_CONSOLE"] = "off"
 os.environ["WANDB_SILENT"] = "true"
@@ -37,7 +40,6 @@ from .distill import (
     VideoFrozenRFDETRTeacher,
     distillation_loss,
     CRRCDLoss,
-    stfs_feature_alignment_loss,
 )
 
 
@@ -113,6 +115,17 @@ def _flatten_predictions(out: dict, B: int, T: int) -> dict:
     return flat
 
 
+def _dynamic_batch_resize_config(cfg: Config) -> dict | None:
+    if not cfg.dynamic_batch_resize_enabled:
+        return None
+    return {
+        "min_size": cfg.dynamic_batch_resize_min_size,
+        "max_size": cfg.dynamic_batch_resize_max_size,
+        "step": cfg.dynamic_batch_resize_step,
+        "p": cfg.dynamic_batch_resize_p,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Train
 # ─────────────────────────────────────────────────────────────────────
@@ -170,15 +183,19 @@ def train(cfg: Config):
 
     if cfg.distill_enabled:
         print(
-            f"[KD] distill_through_refine={cfg.distill_through_refine} "
-            f"distill_centre_frame_only={cfg.distill_centre_frame_only} "
-            f"stfs_feature_align={cfg.stfs_feature_align_enabled} "
-            f"stfs_feature_align_weight={cfg.stfs_feature_align_weight}"
+            f"[KD] distill_centre_frame_only={cfg.distill_centre_frame_only}"
         )
     print(
-        f"[Video] stfs_enabled={cfg.stfs_enabled} "
-        f"refinement_enabled={cfg.refinement_enabled}"
+        f"[Video] etf_enabled={cfg.etf_enabled} "
+        f"consistency_enabled={cfg.consistency_enabled}"
     )
+    dynamic_resize_config = _dynamic_batch_resize_config(cfg)
+    if dynamic_resize_config is not None:
+        print(
+            "[Video] DynamicBatchResize enabled: "
+            f"{cfg.dynamic_batch_resize_min_size}-{cfg.dynamic_batch_resize_max_size}, "
+            f"step={cfg.dynamic_batch_resize_step}, p={cfg.dynamic_batch_resize_p}"
+        )
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -231,13 +248,25 @@ def train(cfg: Config):
                 images, targets_list, _ = batch
                 teacher_frames = None
             images = images.to(device, non_blocking=True)
+            current_img_size = cfg.img_size
+            dynamic_resize_size = None
+            if dynamic_resize_config is not None:
+                rng = random.Random(global_step)
+                dynamic_resize_size = choose_dynamic_batch_size(
+                    dynamic_resize_config,
+                    divisor=32,
+                    rng=rng,
+                )
+                if dynamic_resize_size is not None:
+                    images = resize_tensor_batch(images, dynamic_resize_size)
+                    current_img_size = int(dynamic_resize_size)
             B, T = images.shape[:2]
 
-            targets_flat = _flatten_targets(targets_list, device, cfg.img_size)
+            targets_flat = _flatten_targets(targets_list, device, current_img_size)
             warmup_lr(optimizer, global_step, cfg.warmup_iters, base_lrs)
 
             with autocast(enabled=cfg.amp):
-                # ── Branch 1: full STFS forward, multi-frame det loss ──
+                # ── Branch 1: video forward, multi-frame det loss ──
                 out = model(images, query_mode="student")
                 pred_flat = _flatten_predictions(out, B, T)
                 loss_dict = criterion(pred_flat, targets_flat)
@@ -257,14 +286,11 @@ def train(cfg: Config):
                     loss = loss + cfg.consistency_weight * loss_num
                     loss_dict["loss_num"] = loss_num.detach()
 
-                stfs_hs = model._captured_stfs_hs
-                stfs_mask = model._captured_stfs_mask
-
                 # ── Branch 2: CRRCD + KD specific (per-frame) ─────
                 if cfg.distill_enabled:
                     # E2: optionally restrict KD/CRRCD to the centre frame
-                    # so the 2D teacher does not penalise temporal-only
-                    # detections produced by Branch 1 (full-T STFS).
+                    # to keep the 2D teacher supervision focused on the
+                    # headline frame.
                     if cfg.distill_centre_frame_only:
                         c = T // 2
                         kd_images = images[:, c:c + 1].contiguous()
@@ -274,29 +300,6 @@ def train(cfg: Config):
                         kd_teacher_frames = teacher_frames
                     with torch.no_grad():
                         t_out = teacher.forward_video(kd_teacher_frames)
-                    if (
-                        cfg.stfs_feature_align_enabled
-                        and stfs_hs is not None
-                        and "decoder_hs" in t_out
-                    ):
-                        if cfg.distill_centre_frame_only:
-                            align_student_hs = stfs_hs[:, c:c + 1]
-                            align_mask = (
-                                stfs_mask[:, c:c + 1]
-                                if stfs_mask is not None else None
-                            )
-                        else:
-                            align_student_hs = stfs_hs
-                            align_mask = stfs_mask
-                        loss_stfs_align = stfs_feature_alignment_loss(
-                            align_student_hs,
-                            t_out["decoder_hs"],
-                            stfs_mask=align_mask,
-                            teacher_weights=t_out.get("foreground_weight"),
-                            teacher_topk=int(cfg.stfs_feature_align_teacher_topk),
-                        )
-                        loss = loss + cfg.stfs_feature_align_weight * loss_stfs_align
-                        loss_dict["loss_stfs_align"] = loss_stfs_align.detach()
                     student_kd_spec = model(
                         kd_images,
                         query_mode="teacher",
@@ -305,14 +308,7 @@ def train(cfg: Config):
                             "refpoints": t_out["decoder_refpoints"],
                         },
                     )
-                    # E1: when KD goes through refinement, CRRCD must
-                    # hook the post-refine hidden state (the actual
-                    # head input at inference). Otherwise fall back to
-                    # the pre-refine decoder output.
-                    if cfg.distill_through_refine:
-                        student_hs_spec = model._captured_refined_hs
-                    else:
-                        student_hs_spec = model._captured_decoder_hs
+                    student_hs_spec = model._captured_decoder_hs
                     distill_spec = distillation_loss(
                         student_kd_spec, t_out, cfg,
                     )
@@ -398,6 +394,8 @@ def train(cfg: Config):
                     "train/loss": loss.item(),
                     "train/lr": optimizer.param_groups[0]["lr"],
                 }
+                if dynamic_resize_size is not None:
+                    step_log["train/dynamic_batch_resize_size"] = dynamic_resize_size
                 for k, v in loss_dict.items():
                     step_log[f"train/{k}"] = float(v.item()) if torch.is_tensor(v) else float(v)
                 wandb.log(step_log, step=global_step)
@@ -486,7 +484,7 @@ def train(cfg: Config):
 def parse_args():
     p = argparse.ArgumentParser(
         description=(
-            "Train Video RF-DETR (STFS + multi-frame consistency). "
+            "Train Video RF-DETR (multi-frame consistency + optional ETF). "
             "Removed flags vs rfdetr_temporal: --neighborhood-k, "
             "--temporal-layers, --cpc*, --temporal-dropout*, "
             "--consistency-{offset,top-k,kl-weight,l1-weight}."
@@ -502,9 +500,6 @@ def parse_args():
     p.add_argument("--output-dir", type=str, default="rfdetr_video/runs")
     p.add_argument("--run-name", type=str, default=None)
     p.add_argument("--freeze-decoder", action="store_true")
-    p.add_argument("--no-refinement", action="store_true",
-                   help="Disable the student refinement layer and train/eval "
-                        "directly on first-pass decoder predictions.")
     p.add_argument("--no-wandb", action="store_true")
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--grad-accum", type=int, default=2)
@@ -522,42 +517,9 @@ def parse_args():
     p.add_argument("--crrcd-num-bg", type=int, default=None)
     p.add_argument("--crrcd-num-negatives", type=int, default=None)
     p.add_argument("--crrcd-temperature", type=float, default=None)
-    # E1 / E2: where KD/CRRCD lands in the video pipeline.
-    p.add_argument("--distill-through-refine", action="store_true",
-                   help="E1: route KD branches through the refinement layer "
-                        "and capture CRRCD on the post-refine hidden state.")
     p.add_argument("--distill-centre-frame-only", action="store_true",
-                   help="E2: restrict KD/CRRCD branches to the centre frame "
+                    help="Restrict KD/CRRCD branches to the centre frame "
                         "of each window (T_kd=1).")
-    p.add_argument("--stfs-feature-align", action="store_true",
-                   help="Align Branch-1 STFS-injected embeddings to the "
-                        "teacher decoder feature space (nearest-cosine).")
-    p.add_argument("--stfs-feature-align-weight", type=float, default=None)
-    p.add_argument("--stfs-feature-align-teacher-topk", type=int, default=None)
-
-    # STFS knobs
-    p.add_argument("--no-stfs", action="store_true",
-                   help="Fully skip STFS tracking/injection in student mode.")
-    p.add_argument("--stfs-iou-weight", type=float, default=None)
-    p.add_argument("--stfs-l1-weight", type=float, default=None)
-    p.add_argument("--stfs-cls-weight", type=float, default=None)
-    p.add_argument("--stfs-track-score-thresh", type=float, default=None)
-    p.add_argument("--stfs-match-iou-thresh", type=float, default=None)
-    p.add_argument("--stfs-min-track-len", type=int, default=None)
-    p.add_argument("--stfs-inject-alpha", type=float, default=None)
-    # Soft aggregator (cross-attention embedding mix)
-    p.add_argument("--no-stfs-aggregator", action="store_true",
-                   help="Disable FeatureAggregator; revert to hard torch.where blend.")
-    p.add_argument("--stfs-aggregator-heads", type=int, default=None)
-    p.add_argument("--stfs-aggregator-dropout", type=float, default=None)
-    # Proposal-shift refpoint grid
-    p.add_argument("--no-stfs-shifter", action="store_true",
-                   help="Disable 5-point proposal-shift grid; revert to "
-                        "direct source refpoint copy.")
-    p.add_argument("--stfs-shifter-padding-alpha", type=float, default=None,
-                   help="5-point grid wh expansion factor (default 1.5).")
-    p.add_argument("--stfs-shifter-hidden-dim", type=int, default=None,
-                   help="Deprecated; ignored by deterministic RefPointShift.")
 
     # Consistency
     p.add_argument("--consistency-weight", type=float, default=None)
@@ -583,12 +545,15 @@ def parse_args():
     p.add_argument("--temporal-dropout-neighbour-p", type=float, default=None)
     p.add_argument("--temporal-dropout-radius", type=int, default=None)
     p.add_argument("--temporal-dropout-noise-std", type=float, default=None)
-    args = p.parse_args()
-    if args.no_refinement and args.distill_through_refine:
-        p.error("--no-refinement cannot be combined with --distill-through-refine")
-    if args.no_stfs and args.stfs_feature_align:
-        p.error("--no-stfs cannot be combined with --stfs-feature-align")
-    return args
+
+    # Dynamic batch-level resize augmentation
+    p.add_argument("--dynamic-batch-resize", action="store_true",
+                   help="Resize each train batch to one random square size.")
+    p.add_argument("--dynamic-batch-resize-min-size", type=int, default=None)
+    p.add_argument("--dynamic-batch-resize-max-size", type=int, default=None)
+    p.add_argument("--dynamic-batch-resize-step", type=int, default=None)
+    p.add_argument("--dynamic-batch-resize-p", type=float, default=None)
+    return p.parse_args()
 
 
 def _maybe(d, k, v, cast=lambda x: x):
@@ -607,8 +572,6 @@ if __name__ == "__main__":
         T=args.T,
         rfdetr_checkpoint=args.checkpoint,
         freeze_decoder=args.freeze_decoder,
-        refinement_enabled=not args.no_refinement,
-        stfs_enabled=not args.no_stfs,
         wandb_enabled=not args.no_wandb,
         run_name=args.run_name,
         num_workers=args.num_workers,
@@ -622,39 +585,13 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "distill_teacher_ckpt", args.distill_teacher_ckpt, str)
     if args.crrcd:
         cfg_kwargs["crrcd_enabled"] = True
-    if args.distill_through_refine:
-        cfg_kwargs["distill_through_refine"] = True
     if args.distill_centre_frame_only:
         cfg_kwargs["distill_centre_frame_only"] = True
-    if args.stfs_feature_align:
-        cfg_kwargs["stfs_feature_align_enabled"] = True
-    _maybe(cfg_kwargs, "stfs_feature_align_weight", args.stfs_feature_align_weight, float)
-    _maybe(
-        cfg_kwargs,
-        "stfs_feature_align_teacher_topk",
-        args.stfs_feature_align_teacher_topk,
-        int,
-    )
     _maybe(cfg_kwargs, "crrcd_loss_weight", args.crrcd_weight, float)
     _maybe(cfg_kwargs, "crrcd_num_fg", args.crrcd_num_fg, int)
     _maybe(cfg_kwargs, "crrcd_num_bg", args.crrcd_num_bg, int)
     _maybe(cfg_kwargs, "crrcd_num_negatives", args.crrcd_num_negatives, int)
     _maybe(cfg_kwargs, "crrcd_temperature", args.crrcd_temperature, float)
-    _maybe(cfg_kwargs, "stfs_iou_weight", args.stfs_iou_weight, float)
-    _maybe(cfg_kwargs, "stfs_l1_weight", args.stfs_l1_weight, float)
-    _maybe(cfg_kwargs, "stfs_cls_weight", args.stfs_cls_weight, float)
-    _maybe(cfg_kwargs, "stfs_track_score_thresh", args.stfs_track_score_thresh, float)
-    _maybe(cfg_kwargs, "stfs_match_iou_thresh", args.stfs_match_iou_thresh, float)
-    _maybe(cfg_kwargs, "stfs_min_track_len", args.stfs_min_track_len, int)
-    _maybe(cfg_kwargs, "stfs_inject_alpha", args.stfs_inject_alpha, float)
-    if args.no_stfs_aggregator:
-        cfg_kwargs["stfs_aggregator_enabled"] = False
-    _maybe(cfg_kwargs, "stfs_aggregator_heads", args.stfs_aggregator_heads, int)
-    _maybe(cfg_kwargs, "stfs_aggregator_dropout", args.stfs_aggregator_dropout, float)
-    if args.no_stfs_shifter:
-        cfg_kwargs["stfs_shifter_enabled"] = False
-    _maybe(cfg_kwargs, "stfs_shifter_padding_alpha", args.stfs_shifter_padding_alpha, float)
-    _maybe(cfg_kwargs, "stfs_shifter_hidden_dim", args.stfs_shifter_hidden_dim, int)
     _maybe(cfg_kwargs, "consistency_weight", args.consistency_weight, float)
     _maybe(cfg_kwargs, "consistency_threshold", args.consistency_threshold, float)
     if args.etf:
@@ -668,5 +605,11 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "temporal_dropout_neighbour_p", args.temporal_dropout_neighbour_p, float)
     _maybe(cfg_kwargs, "temporal_dropout_radius", args.temporal_dropout_radius, int)
     _maybe(cfg_kwargs, "temporal_dropout_noise_std", args.temporal_dropout_noise_std, float)
+    if args.dynamic_batch_resize:
+        cfg_kwargs["dynamic_batch_resize_enabled"] = True
+    _maybe(cfg_kwargs, "dynamic_batch_resize_min_size", args.dynamic_batch_resize_min_size, int)
+    _maybe(cfg_kwargs, "dynamic_batch_resize_max_size", args.dynamic_batch_resize_max_size, int)
+    _maybe(cfg_kwargs, "dynamic_batch_resize_step", args.dynamic_batch_resize_step, int)
+    _maybe(cfg_kwargs, "dynamic_batch_resize_p", args.dynamic_batch_resize_p, float)
     cfg = Config(**cfg_kwargs)
     train(cfg)

@@ -36,6 +36,7 @@ from torchvision.transforms import Normalize as _TVNormalize
 
 from rfdetr.util.box_ops import box_xyxy_to_cxcywh
 from rfdetr.util.logger import get_logger
+from rfdetr.utilities.dynamic_batch_resize import DYNAMIC_BATCH_RESIZE_KEY
 
 logger = get_logger()
 
@@ -742,6 +743,8 @@ class AlbumentationsWrapper:
                 )
                 continue
             aug_name, params = next(iter(entry.items()))
+            if aug_name == DYNAMIC_BATCH_RESIZE_KEY:
+                continue
 
             # Shorthand: container value is a list -> treat as {"transforms": [...]}
             if isinstance(params, list) and aug_name in ALBUMENTATIONS_CONTAINERS:

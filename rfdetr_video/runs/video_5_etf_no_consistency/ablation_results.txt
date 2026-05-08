@@ -1,0 +1,30 @@
+STFS Ablation Tests – video_5_etf_no_consistency
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/video_5_etf_no_consistency
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1614 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5043  AP50=0.2481  AP75=0.0141  AP5095=0.0703  F1=0.3124  Frag=0.37  FragRate=0.0201
+  MICRO (pooled)      AP30=0.3892  AP50=0.1008  AP75=0.0009  AP5095=0.0201  F1=0.2363  P=0.2893  R=0.1996  thr=0.3600  Frag=59  FragRate=0.0258
+  Dataset : dataset2_split_test  (31 videos, 1128 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5905  AP50=0.3525  AP75=0.0221  AP5095=0.1032  F1=0.4049  Frag=2.06  FragRate=0.0457
+  MICRO (pooled)      AP30=0.5813  AP50=0.2635  AP75=0.0118  AP5095=0.0727  F1=0.3715  P=0.3800  R=0.3635  thr=0.3800  Frag=64  FragRate=0.0567
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.3892  0.1008  0.0009  0.2363  0.2893  0.1996     59   0.0258
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.5813  0.2635  0.0118  0.3715  0.3800  0.3635     64   0.0567

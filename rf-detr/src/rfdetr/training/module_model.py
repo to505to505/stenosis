@@ -23,6 +23,11 @@ from rfdetr.datasets.coco import compute_multi_scale_scales
 from rfdetr.models import build_criterion_from_config, build_model_from_config
 from rfdetr.models.weights import apply_lora, load_pretrain_weights
 from rfdetr.training.param_groups import get_param_dict
+from rfdetr.utilities.dynamic_batch_resize import (
+    choose_dynamic_batch_size,
+    extract_dynamic_batch_resize_config,
+    resize_nested_tensor_batch,
+)
 from rfdetr.utilities.logger import get_logger
 
 logger = get_logger()
@@ -40,6 +45,8 @@ class RFDETRModelModule(LightningModule):
         super().__init__()
         self.model_config = model_config
         self.train_config = train_config
+        self._dynamic_batch_resize_config = extract_dynamic_batch_resize_config(train_config.aug_config)
+        self._dynamic_batch_resize_divisor = max(1, model_config.patch_size * model_config.num_windows)
         # Allow partial state-dict loading when resuming from a .pth checkpoint
         # (which contains only model weights, not criterion/postprocess state).
         self.strict_loading = False
@@ -67,9 +74,16 @@ class RFDETRModelModule(LightningModule):
 
         # torch.compile is opt-in: set model_config.compile=True to enable.
         # Only enabled on CUDA; MPS and CPU do not benefit from compilation.
-        compile_enabled = model_config.compile and torch.cuda.is_available() and not train_config.multi_scale
+        compile_enabled = (
+            model_config.compile
+            and torch.cuda.is_available()
+            and not train_config.multi_scale
+            and self._dynamic_batch_resize_config is None
+        )
         if model_config.compile and train_config.multi_scale:
             logger.info("Disabling torch.compile because multi_scale=True introduces dynamic input shapes.")
+        if model_config.compile and self._dynamic_batch_resize_config is not None:
+            logger.info("Disabling torch.compile because DynamicBatchResize introduces dynamic input shapes.")
         if compile_enabled:
             # dynamic=True: one compiled graph handles all multi-scale input sizes instead
             # of recompiling per (H, W) pair. suppress_errors=True: if inductor can't
@@ -110,7 +124,18 @@ class RFDETRModelModule(LightningModule):
         tc = self.train_config
         mc = self.model_config
 
-        if tc.multi_scale and not tc.do_random_resize_via_padding:
+        if self._dynamic_batch_resize_config is not None:
+            samples, targets = batch
+            rng = random.Random(self.trainer.global_step)
+            scale = choose_dynamic_batch_size(
+                self._dynamic_batch_resize_config,
+                divisor=self._dynamic_batch_resize_divisor,
+                rng=rng,
+            )
+            if scale is not None:
+                with torch.no_grad():
+                    resize_nested_tensor_batch(samples, targets, scale)
+        elif tc.multi_scale and not tc.do_random_resize_via_padding:
             samples, _ = batch
             scales = compute_multi_scale_scales(mc.resolution, tc.expanded_scales, mc.patch_size, mc.num_windows)
             step = self.trainer.global_step

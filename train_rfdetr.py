@@ -323,6 +323,18 @@ def main():
     parser.add_argument("--lsj-max-scale", type=float, default=2.0,
                         help="LSJ maximum linear scale factor (default: 2.0)")
 
+    # Batch-level dynamic resize augmentation
+    parser.add_argument("--dynamic-batch-resize", action="store_true", default=False,
+                        help="Enable DynamicBatchResize: resize each training batch to one random square size.")
+    parser.add_argument("--dynamic-batch-resize-min-size", type=int, default=320,
+                        help="Minimum DynamicBatchResize square size (default: 320)")
+    parser.add_argument("--dynamic-batch-resize-max-size", type=int, default=800,
+                        help="Maximum DynamicBatchResize square size (default: 800)")
+    parser.add_argument("--dynamic-batch-resize-step", type=int, default=32,
+                        help="DynamicBatchResize size step/divisor (default: 32)")
+    parser.add_argument("--dynamic-batch-resize-p", type=float, default=1.0,
+                        help="Probability of applying DynamicBatchResize to a batch (default: 1.0)")
+
     # Evaluation
     parser.add_argument("--run-test", action="store_true", default=True,
                         help="Run evaluation on test set after training")
@@ -370,20 +382,34 @@ def main():
     # Stenosis angiograms are grayscale — disable color augmentations,
     # keep geometric + brightness augmentations
     aug_config = {
-        # Geometric
+        # Allowed geometry (minimal anatomical distortion)
         "HorizontalFlip": {"p": 0.5},
-        "VerticalFlip": {"p": 0.5},
-        "Rotate": {"limit": 20, "p": 0.3},
-        "Affine": {"scale": (0.9, 1.1), "translate_percent": (-0.05, 0.05), "p": 0.3},
-        "Perspective": {"scale": (0.02, 0.05), "p": 0.15},
-        # Pixel-level (grayscale-safe)
+        "Rotate": {"limit": 10, "p": 0.3},
+        # Simulate different X-ray contrast algorithms
         "RandomBrightnessContrast": {"brightness_limit": 0.3, "contrast_limit": 0.3, "p": 0.5},
         "CLAHE": {"clip_limit": 4.0, "p": 0.3},
         "RandomGamma": {"gamma_limit": (80, 120), "p": 0.3},
+        # Simulate different radiation dose (noise) and tube focus (blur/sharpness)
+        "GaussNoise": {"std_range": (0.01, 0.05), "p": 0.3},
         "GaussianBlur": {"blur_limit": 3, "p": 0.2},
-        "GaussNoise": {"std_range": (0.01, 0.05), "p": 0.2},
         "Sharpen": {"alpha": (0.2, 0.5), "lightness": (0.5, 1.0), "p": 0.2},
     }
+
+    if args.dynamic_batch_resize:
+        aug_config = {
+            "DynamicBatchResize": {
+                "min_size": args.dynamic_batch_resize_min_size,
+                "max_size": args.dynamic_batch_resize_max_size,
+                "step": args.dynamic_batch_resize_step,
+                "p": args.dynamic_batch_resize_p,
+            },
+            **aug_config,
+        }
+        print(
+            "[INFO] DynamicBatchResize enabled: "
+            f"{args.dynamic_batch_resize_min_size}-{args.dynamic_batch_resize_max_size}, "
+            f"step={args.dynamic_batch_resize_step}, p={args.dynamic_batch_resize_p}"
+        )
 
     # ── Large Scale Jittering (LSJ) ──
     # Prepended so it runs first, before other augmentations.

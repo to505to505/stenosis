@@ -1,4 +1,4 @@
-"""Video dataset for RF-DETR / STFS.
+"""Video dataset for RF-DETR.
 
 Returns sliding windows of ``T`` consecutive RGB frames together with
 **per-frame** targets (``len(targets) == T``), so the multi-frame

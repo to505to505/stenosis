@@ -1,9 +1,4 @@
-"""Centralised configuration for the Video / STFS RF-DETR refactor.
-
-Mirrors :class:`rfdetr_temporal.config.Config` for the knobs that still
-apply (CRRCD, KD, optimiser) and replaces the per-pixel temporal-fusion
-options with the new STFS + multi-frame-consistency knobs.
-"""
+"""Centralised configuration for Video RF-DETR."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,31 +7,31 @@ from typing import Optional
 
 @dataclass
 class Config:
-    # ── Paths ──────────────────────────────────────────────────────────
+    # Paths
     data_root: Path = Path("data/dataset2_split")
     output_dir: Path = Path("rfdetr_video/runs")
 
-    # ── Image / sequence ───────────────────────────────────────────────
+    # Image / sequence
     img_size: int = 512
     T: int = 5
 
-    # ── RF-DETR pretrained ─────────────────────────────────────────────
+    # RF-DETR pretrained
     rfdetr_checkpoint: str = "rfdetr_runs/dataset2_augs/checkpoint_best_total.pth"
     freeze_backbone: bool = True
     freeze_decoder: bool = False
 
-    # ── Detection ──────────────────────────────────────────────────────
+    # Detection
     hidden_dim: int = 256
     num_classes: int = 1
     num_queries: int = 300
     score_thresh: float = 0.05
     nms_thresh: float = 0.5
 
-    # ── Normalisation ──────────────────────────────────────────────────
+    # Normalisation
     pixel_mean: tuple = (0.485, 0.456, 0.406)
     pixel_std: tuple = (0.229, 0.224, 0.225)
 
-    # ── Training ───────────────────────────────────────────────────────
+    # Training
     epochs: int = 50
     batch_size: int = 2
     num_workers: int = 4
@@ -48,24 +43,18 @@ class Config:
     lr_gamma: float = 0.1
     grad_accum_steps: int = 2
 
-    # ── Logging ────────────────────────────────────────────────────────
+    # Logging
     wandb_project: str = "rfdetr-video"
     wandb_enabled: bool = True
     run_name: Optional[str] = None
     log_interval: int = 50
     eval_interval: int = 1
 
-    # ── Misc ───────────────────────────────────────────────────────────
+    # Misc
     seed: int = 42
     amp: bool = True
 
-    # ── Video refinement ───────────────────────────────────────────────
-    # Warm-init extra decoder layer after STFS. Disable for first-pass
-    # ablations/training where final predictions should come directly
-    # from the base RF-DETR decoder output.
-    refinement_enabled: bool = True
-
-    # ── KD-DETR distillation (specific + general sampling) ────────────
+    # KD-DETR distillation (specific + general sampling)
     distill_enabled: bool = False
     distill_teacher_ckpt: str = (
         "rfdetr_runs/rfdetr_large_arcade2x_704_reg/checkpoint_best_total.pth"
@@ -85,24 +74,9 @@ class Config:
     distill_general_loss_weight: float = 0.5
     distill_general_min_weight: float = 0.1
     distill_general_query_std: float = 0.02
-    # E1: route KD branches through the refinement layer so the teacher's
-    # knowledge lands on the post-refinement tensors that drive inference.
-    # STFS stays bypassed in KD branches to preserve 1:1 teacher↔student
-    # slot alignment required by KD-DETR consistent distillation points.
-    distill_through_refine: bool = False
-    # E2: restrict KD/CRRCD branches to the centre frame of each window
-    # so the 2D teacher does not penalise temporal-only detections that
-    # the video model is designed to make on H-FN frames.
     distill_centre_frame_only: bool = False
-    # Teacher-guided STFS feature alignment: Branch 1 aligns injected
-    # STFS embeddings against teacher decoder_hs without assuming slot
-    # identity. This regularises FeatureAggregator outputs before the
-    # refinement layer sees them.
-    stfs_feature_align_enabled: bool = False
-    stfs_feature_align_weight: float = 0.1
-    stfs_feature_align_teacher_topk: int = 16
 
-    # ── CRRCD: per-frame relational contrastive distillation ──────────
+    # CRRCD: per-frame relational contrastive distillation
     crrcd_enabled: bool = False
     crrcd_loss_weight: float = 2.0
     crrcd_relation_dim: int = 256
@@ -112,67 +86,28 @@ class Config:
     crrcd_num_negatives: int = 16
     crrcd_temperature: float = 0.1
 
-    # ── STFS: Query-Level Spatio-Temporal Feature Sharing ─────────────
-    # Disable to fully bypass track_queries/inject_features and train/eval
-    # the student on plain per-frame decoder queries.
-    stfs_enabled: bool = True
-    # Per-frame Hungarian tracking cost weights: c = w_iou·(1-IoU) +
-    # w_l1·L1(centres) + w_cls·(1 - class_prob).
-    stfs_iou_weight: float = 2.0
-    stfs_l1_weight: float = 5.0
-    stfs_cls_weight: float = 2.0
-    # Reject a Hungarian match if IoU falls below this threshold; the
-    # corresponding frame is then marked Hypothesis-False-Negative (H-FN).
-    stfs_match_iou_thresh: float = 0.1
-    # Confidence threshold used to seed and update tracks.
-    stfs_track_score_thresh: float = 0.3
-    # Drop tracks shorter than this many confident frames (H-FP filter).
-    stfs_min_track_len: int = 3
-    # α in: q[t,q] ← (1-α)·q[t,q] + α·q[t*,q*] for H-FN slots.
-    # Used as the legacy hard-blend weight when ``stfs_aggregator_enabled``
-    # is False; ignored otherwise.
-    stfs_inject_alpha: float = 1.0
-
-    # ── Soft RoI Aggregator (STQD-Det / SFF-style cross-attention) ────
-    # When enabled, H-FN slot embeddings are mixed with the strong source
-    # embedding through a learnable Multi-Head Cross-Attention block
-    # (Q = weak slot, KV = strong source) instead of a hard torch.where.
-    stfs_aggregator_enabled: bool = True
-    stfs_aggregator_heads: int = 8
-    stfs_aggregator_dropout: float = 0.0
-
-    # ── Proposal-Shift refpoint grid (PSSTT-style) ───────────────────
-    # When enabled, H-FN slot refpoints are taken from the strong source
-    # frame, expanded by ``stfs_shifter_padding_alpha``, and converted to
-    # a deterministic 5-point grid (centre/up/down/left/right). The
-    # refinement layer cross-attends to these visual hypotheses instead
-    # of relying on a blind MLP Δcxcywh regressor.
-    stfs_shifter_enabled: bool = True
-    stfs_shifter_padding_alpha: float = 1.5
-    stfs_shifter_hidden_dim: Optional[int] = None  # deprecated/ignored
-
-    # ── Multi-frame count consistency loss (L_num) ───────────────────
+    # Multi-frame count consistency loss
     consistency_enabled: bool = True
     consistency_weight: float = 0.5
-
-    # ── Early Temporal Fusion (ETF) ───────────────────────────────────
-    # Lightweight temporal self-attention inserted between the DINOv2
-    # backbone and the RF-DETR encoder.  Disabled by default.
-    # When enabled, each backbone feature map (B*T, C, h, w) is reshaped
-    # to (B*h*w, T, C) and passed through one pre-norm MHA layer over the
-    # T axis before being fed into the transformer.
-    etf_enabled: bool = False
-    etf_heads: int = 8
-    etf_dropout: float = 0.0
-    # Hard threshold for counting boxes; soft-count surrogate uses this
-    # plus ``consistency_soft_temp`` so gradient flows.
     consistency_threshold: float = 0.3
     consistency_soft_temp: float = 0.05
 
-    # ── Temporal Dropout (train-only frame masking) ──────────────────
+    # Early Temporal Fusion (ETF)
+    etf_enabled: bool = False
+    etf_heads: int = 8
+    etf_dropout: float = 0.0
+
+    # Temporal Dropout (train-only frame masking)
     temporal_dropout_enabled: bool = False
     temporal_dropout_prob: float = 0.25
     temporal_dropout_centre_p: float = 1.0
     temporal_dropout_neighbour_p: float = 0.3
     temporal_dropout_radius: int = 1
     temporal_dropout_noise_std: float = 1.0
+
+    # Dynamic batch-level resize augmentation (train-only)
+    dynamic_batch_resize_enabled: bool = False
+    dynamic_batch_resize_min_size: int = 320
+    dynamic_batch_resize_max_size: int = 800
+    dynamic_batch_resize_step: int = 32
+    dynamic_batch_resize_p: float = 1.0

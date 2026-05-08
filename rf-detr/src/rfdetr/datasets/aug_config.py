@@ -14,6 +14,9 @@ from rfdetr.datasets.aug_config import AUG_CONSERVATIVE, AUG_AGGRESSIVE, AUG_AER
 model.train(dataset_dir="...", aug_config=AUG_CONSERVATIVE)
 model.train(dataset_dir="...", aug_config=AUG_AGGRESSIVE)
 
+# Batch-level dynamic resize (applied once per training batch after collation)
+model.train(dataset_dir="...", aug_config={"DynamicBatchResize": {"min_size": 320, "max_size": 800}})
+
 # Disable all augmentations
 model.train(dataset_dir="...", aug_config={})
 
@@ -42,6 +45,9 @@ model.train(dataset_dir="...", aug_config={"HorizontalFlip": {"p": 0.5}})
 - Color: ColorJitter, HueSaturationValue, RandomBrightnessContrast
 - Blur/Noise: GaussianBlur, GaussNoise, Blur
 - Enhancement: CLAHE, Sharpen, Equalize
+
+**Batch-level transforms** (applied in the training loop after collation):
+- DynamicBatchResize: samples one square size per batch, e.g. 320-800 px
 
 ## Best Practices
 

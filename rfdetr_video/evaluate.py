@@ -1,10 +1,10 @@
 """Evaluation utilities for Video RF-DETR.
 
 Reuses the metric helpers from :mod:`rfdetr_temporal.evaluate` and runs
-the full STFS-enabled forward pass at inference. Reports both per-frame
-mAP (averaged over all T frames in each window) and centre-frame mAP
-(parity with the previous evaluator) so we can compare against the
-existing temporal model.
+the video forward pass at inference. Reports both per-frame mAP
+(averaged over all T frames in each window) and centre-frame mAP
+(parity with the previous evaluator) so we can compare against existing
+single-frame and temporal baselines.
 """
 
 from __future__ import annotations

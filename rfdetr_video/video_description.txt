@@ -1,669 +1,116 @@
 ================================================================================
-  VIDEO RF-DETR: ПОДРОБНОЕ ОПИСАНИЕ АРХИТЕКТУРЫ
-  Пакет: rfdetr_video/
-  Дата: май 2026
+  VIDEO RF-DETR: CURRENT ARCHITECTURE
+  Package: rfdetr_video/
+  Updated: May 2026
 ================================================================================
 
-Предыдущая модель: rfdetr_temporal/ — центральный кадр, F.unfold pixel-level fusion
-Текущая модель:    rfdetr_video/    — все T кадров, Query-Level STFS + refinement layer
-
-────────────────────────────────────────────────────────────────────────────────
-1. МОТИВАЦИЯ И КОНЦЕПТУАЛЬНОЕ ОТЛИЧИЕ ОТ TEMPORAL RF-DETR
-────────────────────────────────────────────────────────────────────────────────
-
-Temporal RF-DETR объединял пространственные признаки T кадров через F.unfold
-(локальное окно k×k) ДО decoder: центральный кадр обогащался пиксельными
-фичами соседних кадров, а предсказание делалось только по центральному кадру.
-
-Ключевые проблемы pixel-level fusion:
-  • Жёсткая привязка к локальному окну (k=0..1) — не компенсирует большие
-    смещения артерии в кардиальном цикле.
-  • Prediction head видит ровно 1 кадр → любая детекция на других кадрах
-    требует отдельного вывода модели.
-  • F.unfold увеличивает потребление памяти пропорционально K² × T.
-
-Video RF-DETR решает те же проблемы на УРОВНЕ QUERY-СЛОТОВ decoder:
-
-  1. Backbone и encoder работают на ВСЕХ T кадрах независимо.
-  2. Первый decoder pass выдаёт полный набор предсказаний (B,T,Q,4/K) для
-     всех T кадров одновременно.
-  3. STFS анализирует слоты cross-frame: строит тректы, мягко агрегирует
-     признаки «пропавшего» слота из лучшего кадра (FeatureAggregator + RefPointShift).
-  4. Refinement decoder layer уточняет обогащённые слоты через deformable
-     cross-attention к per-frame memory.
-  5. Loss считается по ВСЕМ T кадрам → модель обучается детектировать стеноз
-     на каждом кадре окна.
-
-────────────────────────────────────────────────────────────────────────────────
-2. ОБЩАЯ АРХИТЕКТУРА (схема потока данных)
-────────────────────────────────────────────────────────────────────────────────
-
-  Вход: frames (B, T, 3, 512, 512)
-          │
-          ▼
-  ┌─────────────────────────────────────┐
-  │  DINOv2 Backbone + P4 Projector     │  freeze_backbone=True
-  │  reshape → (B*T, 3, H, W)          │  один вызов на B*T кадрах
-  └─────────────────────────────────────┘
-          │
-          │  srcs   (B*T, C, h, w)  [1 level: P4]
-          │  masks  (B*T, h, w)
-          │  poss   (B*T, C, h, w)
-          ▼
-  ┌─────────────────────────────────────┐
-  │  Early Temporal Fusion (ETF)        │  опционально (etf_enabled=False)
-  │  reshape → (B*h*w, T, C)           │  один слой pre-norm temporal MHA
-  │  temporal self-attention (T axis)   │  zero-init out_proj → identity
-  │  reshape → (B*T, C, h, w)          │  ~264K параметров, lr=1e-4
-  └─────────────────────────────────────┘
-          │
-          │  srcs_enriched  (B*T, C, h, w)  ← temporal context added
-          ▼
-  ┌─────────────────────────────────────┐
-  │  RF-DETR Two-Stage Transformer      │  СТАНДАРТНЫЙ без изменений
-  │  encoder=None (Small config)        │
-  │  decoder: 6 TransformerDecoderLayer │
-  │  ──────────────────────────────────  │
-  │  refpoint_embed (300, 4)            │  learnable anchors
-  │  query_feat     (300, 256)          │  learnable content queries
-  └─────────────────────────────────────┘
-          │
-          │  hs[-1]  (B*T, Q, D)    ← последний слой decoder (grad preserved)
-          │  ref_unsigmoid (B*T, Q, 4)
-          ▼
-  ┌─────────────────────────────────────┐
-  │  Первичные головы                   │
-  │  class_embed(hs[-1]) → (B*T, Q, K) │
-  │  bbox_embed(hs[-1])  → (B*T, Q, 4) │  (bbox_reparam: delta + ref)
-  └─────────────────────────────────────┘
-          │
-          │  pred_logits_1st (B, T, Q, K)
-          │  pred_boxes_1st  (B, T, Q, 4)
-          ▼
-  ┌─────────────────────────────────────┐
-  │  STFS: track_queries                │  CPU, torch.no_grad()
-  │  Hungarian chaining frame-by-frame  │
-  │  → List[List[_Track]] per batch     │
-  └─────────────────────────────────────┘
-          │
-          ▼
-  ┌─────────────────────────────────────┐
-  │  STFS: inject_features              │  GPU, autograd-safe
-  │  H-FN слоты (embedding):            │
-  │    FeatureAggregator               │  MHA cross-att + DynConv1D
-  │  H-FN слоты (refpoint):             │
-  │    RefPointShift (5-point grid)     │  centre/up/down/left/right boxes
-  └─────────────────────────────────────┘
-          │
-          │  enriched_emb  (B, T, Q, D)   ← grad через hs[-1] + aggregator
-          │  enriched_ref  (B, T, Q, 4)   ← centre candidate of proposal grid
-          ▼
-  ┌─────────────────────────────────────┐
-  │  Refinement Decoder Layer           │  deepcopy(decoder.layers[-1])
-  │  SA + Deformable Cross-Attention    │  warm-init, независимые параметры
-  │  + refine_norm + refine_ref_point   │  group_detr=1 всегда
-  └─────────────────────────────────────┘
-          │
-          │  out (B*T, Q, D)
-          ▼
-  ┌─────────────────────────────────────┐
-  │  Финальные головы (те же веса)      │
-  │  class_embed → pred_logits          │  (B, T, Q, K)
-  │  bbox_embed  → pred_boxes           │  (B, T, Q, 4)
-  └─────────────────────────────────────┘
-
-────────────────────────────────────────────────────────────────────────────────
-3. BACKBONE: DINOv2 НА B*T КАДРАХ
-────────────────────────────────────────────────────────────────────────────────
-
-Конфигурация: RFDETRSmallConfig (projector_scale=["P4"], hidden_dim=256)
-Вход:         (B*T, 3, 512, 512) — B×T кадров как независимые изображения
-Выход:        1 уровень признаков P4: (B*T, C, h, w), h=w=512/16=32
-
-Заморожен по умолчанию (freeze_backbone=True). При freeze_backbone=False
-backbone добавляется в группу с lr_backbone=1e-5.
-
-ВАЖНО: никакого F.unfold, никакого смешивания пикселей между кадрами.
-Кадры обрабатываются независимо, временной контекст появляется ПОЗЖЕ
-на уровне decoder query slots (STFS) — или РАНЬШЕ через ETF (см. §3.5).
-
-────────────────────────────────────────────────────────────────────────────────
-3.5. EARLY TEMPORAL FUSION (ETF) — ОПЦИОНАЛЬНЫЙ СЛОЙ (etf_enabled=False)
-────────────────────────────────────────────────────────────────────────────────
-
-Мотивация (из SOTA видео-детекторов):
-  • STQD-Det: Global Feature Enhancement (GFE) — после backbone карты признаков
-    группируются по оси T и пропускаются через Multi-Head Attention, обмениваясь
-    информацией ДО попадания в детектор.
-  • LT-YOLO: Spatial-Temporal Fusion Neck на базе двунаправленной Mamba SSM
-    для передачи долгосрочного темпорального контекста между feature levels.
-
-Проблема текущей архитектуры без ETF:
-  Кадры проходят через encoder абсолютно независимо. Слотам декодера сложно
-  сформировать уверенные гипотезы на зашумлённых кадрах, т.к. признаки не имеют
-  никакого контекста о том, что происходит на соседних кадрах окна.
-
-Решение — EarlyTemporalFusion (class rfdetr_video.model.EarlyTemporalFusion):
-  Один лёгкий слой temporal multi-head self-attention между backbone и encoder.
-  Каждая пространственная позиция «видит» свою копию во всех T кадрах окна
-  до формирования query-слотов.
-
-Архитектура:
-  Для каждого уровня признаков src (B*T, C, h, w):
-    1. Reshape: (B*T, C, h, w) → (B, T, C, h, w) → permute → (B*h*w, T, C)
-    2. Pre-norm:  x_n = LayerNorm(x)                           # (B*h*w, T, C)
-    3. Temporal MHA: attn_out = MHA(Q=x_n, K=x_n, V=x_n)     # self-attn по оси T
-    4. Residual:     x = x + attn_out                          # (B*h*w, T, C)
-    5. Reshape back: → (B, h, w, T, C) → permute → (B*T, C, h, w)
-
-Инициализация:
-  out_proj.weight = 0, out_proj.bias = 0 → начальное поведение ≡ identity
-  (residual = 0 при старте, no geometric distortion on epoch 0).
-  warm-start safe: ETF не нарушает первый forward после загрузки чекпоинта.
-
-Параметры:
-  ≈ 4 × 256² + bias ≈ 264K параметров (для hidden_dim=256, n_heads=8)
-  Обучаются с lr=1e-4 (группа decoder_params — нет "backbone" в имени).
-  Всегда trainable даже при freeze_backbone=True.
-
-Конфиг:
-  etf_enabled : bool  = False   # включить ETF
-  etf_heads   : int   = 8       # число голов MHA
-  etf_dropout : float = 0.0     # attention dropout
-
-CLI:
-  --etf                          # включить ETF
-  --etf-heads INT                # число голов (по умолч. 8)
-  --etf-dropout FLOAT            # attention dropout (по умолч. 0.0)
-
-Память:
-  B=2, T=5, h=w=32: attention maps = (2×32×32, 5, 5) = (2048, 5, 5) — пренебрежимо
-  мало. Дополнительная память ~264K × 4 байт = 1 МБ.
-
-Положение в пайплайне:
-  DINOv2 backbone → [ETF: temporal self-attn] → RF-DETR encoder/decoder → STFS → refinement
-
-Эффект:
-  STFS-трекер получает feature maps, уже обогащённые информацией о динамике
-  видеоокна. Гипотезы на зашумлённых кадрах формируются увереннее, что снижает
-  число H-FN кадров и ослабляет нагрузку на inject_features.
-
-────────────────────────────────────────────────────────────────────────────────
-4. ПЕРВЫЙ DECODER PASS: B*T НЕЗАВИСИМЫХ ПРЕДСКАЗАНИЙ
-────────────────────────────────────────────────────────────────────────────────
-
-Стандартный RF-DETR Transformer принимает B*T «изображений»:
-  • srcs:  [(B*T, C, h, w)] — признаки одного уровня P4
-  • masks: [(B*T, h, w)]    — binary padding mask (нулевые при плотном вводе)
-  • poss:  [(B*T, C, h, w)] — позиционные эмбеддинги
-  • refpoint_embed.weight (Q, 4) → broadcast на B*T
-  • query_feat.weight     (Q, D) → broadcast на B*T
-
-Transformer.forward возвращает:
-  hs           (L, B*T, Q, D)   — hidden states всех L=6 слоёв decoder
-  ref_unsigmoid (B*T, Q, 4)     — обновлённые reference points
-
-Первичные предсказания (перед STFS):
-  first_pred_logits = class_embed(hs[-1])  → (B*T, Q, K)
-  first_pred_boxes  = bbox_reparam(hs[-1]) → (B*T, Q, 4) [cxcywh, нормирован]
-
-  reshape → (B, T, Q, K) и (B, T, Q, 4)
-
-────────────────────────────────────────────────────────────────────────────────
-5. STFS: QUERY-LEVEL SPATIO-TEMPORAL FEATURE SHARING
-────────────────────────────────────────────────────────────────────────────────
-
-5.1 Мотивация
-──────────────
-
-Один и тот же стеноз появляется в нескольких кадрах окна, но из-за движения
-артерии и вариации контраста detector в некоторых кадрах его пропускает
-(уверенность ниже порога). Такие кадры называются H-FN (Hypothesis-False-Negative).
-STFS идентифицирует H-FN кадры по трекам и «подсказывает» decoder: инжектирует
-embedding + refpoint из лучшего (наиболее уверенного) кадра трека.
-
-5.2 Формирование треков (track_queries)
-────────────────────────────────────────
-
-Выполняется на CPU без градиентов; входные тензоры детачируются в numpy.
-
-Шаг 0: сеять трек из каждого слота кадра 0 с prob ≥ score_thresh (=0.3)
-        _Track { slots=[q, -1, -1, -1, -1], last_box=boxes[0,q],
-                 best_t=0, best_p=prob[0,q] }
-
-Шаги t=1..T-1:
-  1. Кандидаты: слоты кадра t с prob ≥ score_thresh
-  2. Матрица стоимости (N_tracks × N_cands):
-       c_{i,j} = λ_iou·(1 − IoU(track_i.last_box, cand_j.box))
-               + λ_l1·L1(centre_i, centre_j)
-               + λ_cls·(1 − prob_j)
-     Веса: λ_iou=2.0, λ_l1=5.0, λ_cls=2.0
-  3. Hungarian assignment (scipy.optimize.linear_sum_assignment)
-  4. Принять матч только если IoU ≥ iou_gate (=0.1):
-       ✓ принят → tr.slots[t] = matched_slot_idx; обновить last_box, best_p/best_t
-       ✗ отклонён → tr.slots[t] = -1  [H-FN кадр для этого трека]
-  5. Неприсвоенные кандидаты → новые треки с [-1]*t + [q] + [-1]*(T-1-t)
-
-Фильтр H-FP: треки с числом уверенных кадров < min_track_len (=3) отбрасываются.
-Такие треки считаются артефактами/ложными срабатываниями (Hypothesis-False-Positive).
-
-5.3 Инжекция признаков (inject_features)
-─────────────────────────────────────────
-
-Источник: слот best_q = tr.slots[tr.best_t] (сильнейший кадр трека)
-Цель:     слот best_q в каждом H-FN кадре t (где tr.slots[t] == -1)
-
-Реализация autograd-safe (без in-place операций):
-  src_t[b, t, best_q] = best_t        # (B, T, Q) индексы исходного кадра
-  src_q[b, t, best_q] = best_q        # (B, T, Q) индексы исходного слота
-  inject_mask[b, t, best_q] = True
-
-  # Flatten T*Q, gather source embeddings / refpoints
-  flat_emb = query_embed.reshape(B, T*Q, D)
-  src_emb  = flat_emb.gather(1, ...) → (B, T, Q, D)
-  src_box  = flat_box.gather(1, ...) → (B, T, Q, 4)
-
-── Embedding path ──────────────────────────────────────────────────────
-
-  Если FeatureAggregator включён (stfs_aggregator_enabled=True, по умолч.):
-    Только H-FN слоты (N штук) подаются в двухшаговый блок:
-      x   = LN(weak_q + MHA(Q=weak_q, KV=strong_src))   # (N, D) — cross-attn mix
-      out = LN(x + DynConv1D(x))                          # адаптивный фильтр каналов
-    DynConv1D генерирует per-sample веса каналов через 2-слойный MLP,
-    затем pointwise Linear (zero-init) — аналог DynamicConv в STQD-Det GFE.
-    Аналог RoI Aggregator из STQD-Det (MHA → LN → DynConv → LN).
-    Zero-init out_proj MHA и proj DynConv1D → начальное поведение ≈ identity.
-
-  Иначе (legacy):
-    new_emb = torch.where(mask, (1-α)·query_embed + α·src_emb, query_embed)
-    При α=1.0 → точная копия (прежнее поведение до мая 2026).
-
-── Reference-point path ────────────────────────────────────────────────
-
-  Если RefPointShift включён (stfs_shifter_enabled=True, по умолч.):
-    Нет MLP-регрессора Δcxcywh. Вместо этого строится явная сетка из 5
-    proposal boxes вокруг source refpoint:
-
-      candidates = [centre, up, down, left, right]       # (N, 5, 4)
-      wh         = src_wh * padding_alpha                # padding_alpha=1.5
-      offsets    = (0,0), (0,-wh_y/2), (0,+wh_y/2),
-                   (-wh_x/2,0), (+wh_x/2,0)
-
-    new_ref = centre candidate, а полный candidates tensor передаётся
-    в refinement layer только для STFS-injected слотов.
-    Смысл: не угадывать точный offset вслепую, а позволить deformable
-    cross-attention смотреть в 5 визуально заземлённых гипотез.
-
-  Иначе (legacy):
-    new_ref = torch.where(mask, src_ref, refpoint)
-
-Градиент течёт через new_emb → query_embed[best_t, best_q] (source slot)
-и через aggregator. RefPointShift параметров не имеет; геометрический выбор
-происходит внутри refinement attention / confidence-collapse.
-
-────────────────────────────────────────────────────────────────────────────────
-6. REFINEMENT DECODER LAYER
-────────────────────────────────────────────────────────────────────────────────
-
-6.1 Инициализация
-──────────────────
-
-  self.refine_layer            = copy.deepcopy(transformer.decoder.layers[-1])
-  self.refine_norm             = copy.deepcopy(transformer.decoder.norm)
-  self.refine_ref_point_head   = copy.deepcopy(transformer.decoder.ref_point_head)
-  self.stfs_aggregator         = FeatureAggregator(D, n_heads, dropout)  # если включён
-  self.stfs_shifter            = RefPointShift(D, padding_alpha)  # 0 params, если включён
-
-Warm-init: слой стартует с теми же весами, что лучший обученный decoder layer.
-Параметры независимы — deepcopy создаёт отдельные тензоры, не разделяемые
-с оригинальным decoder. Требуют градиентов принудительно (requires_grad=True).
-
-  refine_layer.group_detr = 1   — отключает SA-split на группы
-
-  FeatureAggregator:
-    nn.MultiheadAttention(d_model, n_heads) + LayerNorm1        # MHA block
-    DynamicConv1D(d_model) + LayerNorm2                        # адаптивный фильтр
-    out_proj MHA и proj DynConv1D zero-init → identity при старте
-
-  RefPointShift:
-    trainable params = 0
-    source refpoint → 5 candidates: centre/up/down/left/right
-    wh = src_wh * padding_alpha; side offsets = ±wh/2 по соответствующей оси
-
-6.2 Захват входов decoder (хуки)
-───────────────────────────────────
-
-Transformer.forward не возвращает memory наружу. Поэтому ставится
-register_forward_pre_hook на decoder.layers[-1] (последний стандартный слой):
-
-  def _capture_cross_inputs_pre_hook(_m, args, kwargs):
-      captured["memory"]                  = args[1]         # (B*T, S, D)
-      captured["spatial_shapes"]          = kwargs[...]     # (n_levels, 2)
-      captured["level_start_index"]       = kwargs[...]     # (n_levels,)
-      captured["memory_key_padding_mask"] = kwargs[...]     # (B*T, S)
-
-После первого decoder pass captured словарь содержит актуальные тензоры.
-
-6.3 Geometry для refinement pass
-──────────────────────────────────
-
-Входы refinement слоя:
-  tgt         : enriched_emb.reshape(B*T, Q, D)        — обогащённые embeddings
-  memory      : captured["memory"]  (B*T, S, D)        — feature map (fixed)
-  spatial_shapes, level_start_index                    — из capture
-  memory_key_padding_mask                              — из capture
-
-  # Reference points для deformable cross-attention:
-  valid_ratios = ones(B*T, n_levels, 2)   # нет padding → все 1.0
-  obj_center   = enriched_ref.reshape(B*T, Q, 4)       # (или .sigmoid())
-  refpoints_input = obj_center[:,:,None] * cat([vr,vr],-1)[:,None]  (B*T,Q,1,4)
-
-  # Sinusoidal positional embedding для query:
-  query_sine_embed = gen_sineembed_for_position(refpoints_input[:,:,0,:], D/2)
-  query_pos        = refine_ref_point_head(query_sine_embed)
-
-Вызов refinement:
-  out = refine_layer(tgt, memory, query_pos=query_pos,
-                     query_sine_embed=..., is_first=False,
-                     reference_points=refpoints_input, ...)
-  out = refine_norm(out)                  # (B*T, Q, D)
-
-Sparse 5-point candidate refinement для STFS-injected слотов:
-  Если RefPointShift вернул candidates (B,T,Q,5,4), обычный refinement
-  сначала считается для всех Q как выше. Затем только mask=True слоты
-  дополнительно прогоняются через refine_layer как 5 query-кандидатов:
-
-    selected_tgt  = repeat(enriched_emb[mask], 5)       # (N,5,D)
-    selected_refs = candidates[mask]                    # (N,5,4)
-    selected_mem  = memory[bt_idx(mask)]                # (N,S,D)
-    out5 = refine_layer(selected_tgt, selected_mem,
-                        reference_points=selected_refs, ...)
-
-  class_embed(out5) даёт confidence каждого spatial hypothesis.
-  Кандидаты сворачиваются softmax-весами по foreground confidence:
-
-    w = softmax(max_sigmoid(class_logits5) / 0.1, dim=5)
-    out[mask]        = Σ_i w_i · out5_i
-    pred_boxes[mask] = Σ_i w_i · box5_i
-
-  Так shape финального выхода остаётся (B,T,Q,*), но deformable attention
-  реально посмотрел center/up/down/left/right гипотезы для H-FN слотов.
-
-Финальные головы (веса те же, что в Branch 1):
-  pred_logits = class_embed(out) → reshape (B, T, Q, K)
-  pred_boxes  = bbox_reparam(out)→ reshape (B, T, Q, 4)
-
-────────────────────────────────────────────────────────────────────────────────
-7. ДАТАСЕТ: ВСЕ T КАДРОВ С АННОТАЦИЕЙ
-────────────────────────────────────────────────────────────────────────────────
-
-Класс: VideoStenosisDataset (dataset.py)
-
-Принципиальное отличие от rfdetr_temporal: аннотации загружаются для ВСЕХ T
-кадров окна (не только центрального).
-
-Структура одного окна:
-  images:  (T, 3, 512, 512) — student резолюция
-  targets: список из T словарей {"boxes": (N,4), "labels": (N,)}
-           каждый кадр имеет собственные аннотации
-
-Аугментация (replay-aware):
-  • geom_aug (HFlip/VFlip/Rotate/Affine) применяется через ReplayCompose:
-    replay для frame 0 сохраняется → идентично применяется на всех T кадрах.
-  • photo_aug (Brightness/Contrast/CLAHE/Blur/Noise) — только студентские кадры,
-    без replay (каждый кадр получает независимые фотометрические изменения).
-
-Teacher window (with_teacher_frame=True):
-  • Те же T кадров, но в HR (704×704)
-  • Геометрический replay совпадает со student → слоты пространственно aligned
-  • Возвращается как (T, 3, 704, 704) → в batch: (B, T, 3, 704, 704)
-
-Collate: collate_video_with_teacher
-  (images[B,T,3,H,W], targets[B][T], teacher[B,T,3,704,704], fnames)
-
-────────────────────────────────────────────────────────────────────────────────
-8. MULTI-FRAME DETECTION LOSS (L_det)
-────────────────────────────────────────────────────────────────────────────────
-
-SetCriterion (стандартный RF-DETR Hungarian matching) применяется к каждому
-кадру независимо. Технически: flatten (B,T,Q,K) → (B*T,Q,K):
-
-  pred_flat = {"pred_logits": out["pred_logits"].reshape(B*T, Q, K),
-               "pred_boxes":  out["pred_boxes"].reshape(B*T, Q, 4)}
-  targets_flat = [targets[b][t] for b in range(B) for t in range(T)]
-  loss_dict = criterion(pred_flat, targets_flat)
-
-SetCriterion внутри для каждого из B*T "изображений":
-  1. Строит матрицу стоимости (Q × N_gt) с кл. loss + L1 + GIoU
-  2. Hungarian assignment → назначает слоты
-  3. cls loss: focal loss или cross-entropy
-  4. box loss: 5·L1 + 2·GIoU (стандартные веса)
-
-Итого в один шаг модель обучается детектировать на всех T=5 кадрах окна.
-
-────────────────────────────────────────────────────────────────────────────────
-9. COUNT CONSISTENCY LOSS — L_num (--consistency-weight)
-────────────────────────────────────────────────────────────────────────────────
-
-Функция: num_consistency_loss (consistency.py)
-
-Идея: число объектов не должно «мерцать» от кадра к кадру в одном окне.
-Если стеноз есть на 3 кадрах окна из 5, то оставшиеся 2 не должны предсказывать 0.
-
-Реализация:
-  # Soft count на каждом кадре (дифференцируемо)
-  n_t = Σ_q sigmoid((p_{t,q} − threshold) / soft_temp)
-        где p_{t,q} = sigmoid(logit_{t,q}).amax(dim=-1)
-        soft_temp = 0.05  (резкость сигмоиды)
-
-  # Consensus: медиана по T (detach → нет градиента через reference)
-  n_ref = median(n_t, dim=T).values.detach()
-
-  # Loss: среднее абсолютное отклонение от consensus
-  L_num = mean_B(mean_T |n_t − n_ref|)
-
-  # В общем loss:
-  L_total += consistency_weight (=0.5) · L_num
-
-Свойства:
-  • Если предсказания стабильны по кадрам → L_num ≈ 0
-  • Если модель предсказывает 5 объектов на чётных кадрах и 0 на нечётных → L_num >> 0
-  • Градиент течёт, поэтому штрафует мерцание во время обучения
-
-────────────────────────────────────────────────────────────────────────────────
-10. ДИСТИЛЛЯЦИЯ: KD-DETR (опционально, --distill)
-────────────────────────────────────────────────────────────────────────────────
-
-Учитель: RF-DETR-Large @ 704px, frozen eval-only.
-Студент: RF-DETR-Small @ 512px + STFS + Refinement.
-
-Новый класс VideoFrozenRFDETRTeacher (distill/teacher.py) добавляет:
-
-  def forward_video(frames_hr: (B, T, 3, 704, 704)):
-      return self.forward(frames_hr.reshape(B*T, 3, 704, 704))
-
-  Возвращает тот же словарь, что FrozenRFDETRTeacher.forward, но с B*T
-  в первой размерности.
-
-Три ветки обучения (идентичны rfdetr_temporal):
-
-  ┌─ Branch 1: Detection (всегда) ──────────────────────────────────────────┐
-  │  out = model(images, query_mode="student")                               │
-  │  loss += criterion(flatten(out), targets_flat)                           │
-  └──────────────────────────────────────────────────────────────────────────┘
-  ┌─ Branch 2: KD Specific Sampling (если --distill) ───────────────────────┐
-  │  t_out = teacher.forward_video(teacher_frames[B,T,3,704,704])  # no_grad │
-  │  # t_out ключи: pred_logits(B*T,Q,K), pred_boxes(B*T,Q,4),              │
-  │  #              decoder_tgt(B*T,Q,D), decoder_refpoints(B*T,Q,4),        │
-  │  #              decoder_hs(B*T,Q,D), foreground_weight(B*T,Q)            │
-  │                                                                           │
-  │  s_out = model(images, query_mode="teacher",                             │
-  │                decoder_inputs={"tgt":       t_out["decoder_tgt"],        │
-  │                                "refpoints": t_out["decoder_refpoints"]}) │
-  │  # pre_hook подменяет tgt+refpoints в decoder студента                   │
-  │  # → slot i у студента и учителя нацелен на одну область                 │
-  │                                                                           │
-  │  loss += distill_loss_weight(1.0) · distillation_loss(s_out, t_out)     │
-  └──────────────────────────────────────────────────────────────────────────┘
-  ┌─ Branch 3: KD General Sampling (если --num-general-queries > 0) ─────────┐
-  │  gen_q = model.sample_general_queries(Q_g=100)                           │
-  │  t_out_gen = teacher.forward_video_general(teacher_frames, gen_q)        │
-  │  s_out_gen = model(images, query_mode="general", general_queries=gen_q,  │
-  │                    decoder_inputs={...})                                  │
-  │  loss += 1.0 · 0.5 · distillation_loss(s_out_gen, t_out_gen)            │
-  └──────────────────────────────────────────────────────────────────────────┘
-
-Функция потерь дистилляции distillation_loss (distill/losses.py):
-  w_i = max_k sigmoid(teacher_logit_{i,k})       ← foreground weight
-
-  L_kl  — Bernoulli KL(p_t || p_s): вес 2.0
-          p = sigmoid(logit); взвешено на w_i; умножено на T² при T≠1
-  L_l1  — |s_boxes − t_boxes|₁ нормированный; вес 5.0
-  L_giou — 1 − GIoU (element-wise); вес 2.0
-
-  L_distill = (2.0·L_kl + 5.0·L_l1 + 2.0·L_giou) взвешен по w_i
-
-────────────────────────────────────────────────────────────────────────────────
-11. CRRCD: CROSS-RESOLUTION RELATIONAL CONTRASTIVE DISTILLATION (--crrcd)
-────────────────────────────────────────────────────────────────────────────────
-
-Класс: CRRCDLoss (переиспользован из rfdetr_temporal.distill.crrcd — не изменён).
-Применяется к embedding'ам размерности (B*T, Q, D): каждый кадр окна участвует
-как независимый «пример» в contrastive loss.
-
-Входы:
-  teacher_hs  (B*T, Q, D)  — detach от учителя
-  student_hs  (B*T, Q, D)  — с градиентом (захватывается через post-hook decoder'а)
-  weights     (B*T, Q)     — foreground_weight учителя
-
-Алгоритм:
-  1. Разделить слоты по весу:
-       fg_idx: top-K_fg (=16)   — уверенные (foreground) по учителю
-       bg_idx: bottom-K_bg (=32) — неуверенные (background)
-
-  2. Два Feature Relation Module (MLP: D → hidden_dim → relation_dim):
-       F^t  (teacher–teacher)  : e^t[fg] − e^t[bg]  →  v^t
-       F^ts (teacher–student)  : e^t[fg] − e^s[bg]  →  v^{ts}
-     Размерность отношений: (B*T, K_fg, K_bg, relation_dim)
-
-  3. Sigmoid-NCE Loss:
-       sim = cosine(v^t, v^{ts}) / τ   (τ=0.1)
-       Positive: j==k → log σ(sim[j,j])
-       Negative: j≠k → log σ(-sim[j,k])  (субсэмплирование n_neg=16)
-       L_rcd = −mean(log_pos + Σ log_neg)
-
-  4. В общий loss:
-       L_total += crrcd_loss_weight (=2.0) · L_rcd
-
-Физический смысл: CRRCD принуждает студента воспроизводить СТРУКТУРУ ОТНОШЕНИЙ
-между embedding'ами foreground/background слотов, не только их позиции/классы.
-
-────────────────────────────────────────────────────────────────────────────────
-12. ПОЛНЫЙ TRAINING LOSS
-────────────────────────────────────────────────────────────────────────────────
-
-  L_total = L_det                              (всегда)
-          + 1.0 · L_distill_spec               (если --distill)
-          + 0.5 · L_distill_gen                (если --distill + --num-general-queries)
-          + 2.0 · L_rcd                        (если --crrcd)
-          + 0.5 · L_num                        (если consistency_enabled)
-
-где L_det = Σ_{b,t} [cls_focal + 5·L1 + 2·GIoU] по всем B*T кадрам
-    L_distill_spec/gen = 2·KL + 5·L1 + 2·GIoU взвешен по fg weights
-    L_rcd = Sigmoid-NCE на отношениях decoder embeddings
-    L_num = MAE счётчика объектов от медианы по T
-
-────────────────────────────────────────────────────────────────────────────────
-13. QUERY MODES И ИЗОЛЯЦИЯ ГРАДИЕНТОВ
-────────────────────────────────────────────────────────────────────────────────
-
-  "student" — learnable refpoint_embed + query_feat (group_detr=13 train / 1 eval)
-              STFS и refinement активны по умолчанию и отключаются через
-              --no-stfs / stfs_enabled=False и
-              --no-refinement / refinement_enabled=False.
-              Hungarian loss обучает detection head + decoder + refinement
-              только когда refinement_enabled=True.
-
-  "teacher" — буферы teacher_refpoint + teacher_query_feat (group_detr=1)
-              STFS и refinement НЕ запускаются.
-              Slot alignment через pre-hook на decoder.
-              Используется для L_distill_spec и L_rcd.
-
-  "general" — случайные queries (group_detr=1)
-              STFS и refinement НЕ запускаются.
-              Используется для L_distill_gen.
-
-  Параметр                   Branch1(det)   Branch2(spec)   Branch3(gen)
-  ──────────────────────────────────────────────────────────────────────
-  refpoint_embed             ✅ обучается   буфер           буфер
-  query_feat                 ✅ обучается   буфер           буфер
-  transformer.decoder        ✅             ✅               ✅
-  refine_layer               ✅             ✗               ✗
-  stfs_aggregator            ✅ если STFS    ✗               ✗
-  stfs_shifter (0 params)    geometry/STFS  ✗               ✗
-  class_embed / bbox_embed   ✅             ✅               ✅
-  backbone                   ✗ (frozen)     ✗ (frozen)      ✗ (frozen)
-  teacher.*                  —              0 (no_grad)      0 (no_grad)
-
-────────────────────────────────────────────────────────────────────────────────
-14. ОПТИМИЗАТОР И РАСПИСАНИЕ
-────────────────────────────────────────────────────────────────────────────────
-
-Оптимизатор: AdamW, weight_decay=1e-4
-
-Группы параметров:
-  backbone.*    → lr=1e-5  (если не заморожен)
-  всё остальное → lr=1e-4  (decoder, refinement, heads, query embeds, CRRCD MLPs)
-  RefPointShift параметров не имеет: это deterministic 5-point geometry grid.
-
-LR расписание:
-  Warmup:      линейный 0 → base_lr за warmup_iters=500 шагов
-  MultiStepLR: ×0.1 на эпохах 30 и 40 (из 50)
-
-Gradient clipping: max_norm=0.1
-Grad accumulation: grad_accum_steps=2  (effective batch = batch_size×2)
-AMP: torch.cuda.amp.autocast + GradScaler
-
-────────────────────────────────────────────────────────────────────────────────
-15. ИНФЕРЕНС И МЕТРИКИ
-────────────────────────────────────────────────────────────────────────────────
-
-evaluate.py: query_mode="student", eval(), torch.no_grad()
-
-Метрики:
-  Headline   — центральный кадр (T//2) каждого окна (parity со старой моделью):
-    AP@0.5, AP@0.75, AP@0.5:0.95, mAR, F1, best_conf_threshold
-
-  Full       — все T кадров (префикс "all/"):
-    all/AP@0.5, all/AP@0.5:0.95, all/mAR, all/F1
-
-Best checkpoint: по headline AP@0.5 центрального кадра.
-
-Чекпоинты в rfdetr_video/runs/<run_name>/:
-  best.pth      — лучший по mAP50
-  last.pth      — последний epoch
-  config.json   — сериализованный Config
-  best.txt      — best metrics + Config
-  history.json  — история по эпохам
-  train.csv     — то же в CSV формате
-
-────────────────────────────────────────────────────────────────────────────────
-16. СРАВНЕНИЕ TEMPORAL vs VIDEO RF-DETR
-────────────────────────────────────────────────────────────────────────────────
-
-  Аспект                   rfdetr_temporal            rfdetr_video
-  ──────────────────────────────────────────────────────────────────────────
-  Temporal fusion          F.unfold pixel-level       query-level (STFS)
-  Early temporal fusion    нет                        ETF: temporal SA на feature maps
-                                                       (опц., --etf, ~264K params)
-  Прогноз на кадры         только центральный         все T кадров
-  Temporal loss            нет                        L_num (count consistency)
-  Refinement               нет                        deepcopy decoder layer
-  F.unfold                 ✓ (k=0 или 1)              ✗ (удалён полностью)
-  H-FN embedding           —                          FeatureAggregator (MHA cross-att)
-  H-FN refpoint            —                          RefPointShift (5-point grid)
-  Параметров (fusion)      ~2–5M (TemporalFusion)     ~3.5M + опц. 0.26M ETF
-  Память (approx, B=2,T=5) больше из-за F.unfold      меньше, O(B*T) linear
-  CRRCD                    центральный кадр × 1       все T кадров × BT batch
-  Consistency loss         L_kl / L_l1 window-pair   L_num soft count median
-  Детекция на T кадрах     нет (только centre eval)   да (обучение + eval)
+Goal
+----
+Video RF-DETR trains RF-DETR on windows of T angiography frames while
+keeping the detector path simple and close to the base RF-DETR model.
+The model predicts every frame in the window in one forward pass.
+
+Input / output
+--------------
+Input frames:
+  frames: (B, T, 3, H, W)
+
+The model flattens the window to B*T images for the RF-DETR backbone and
+transformer, then reshapes predictions back to:
+  pred_logits: (B, T, Q, K)
+  pred_boxes:  (B, T, Q, 4)
+
+Core pipeline
+-------------
+  frames (B,T,3,H,W)
+      |
+      v
+  reshape to (B*T,3,H,W)
+      |
+      v
+  DINOv2 backbone + RF-DETR projector
+      |
+      v
+  optional ETF: temporal self-attention on feature maps
+      |
+      v
+  standard RF-DETR transformer decoder
+      |
+      v
+  standard RF-DETR class and box heads
+      |
+      v
+  reshape to (B,T,Q,*)
+
+Early Temporal Fusion (ETF)
+---------------------------
+ETF is the only temporal feature-mixing module in the model.
+It is optional and controlled by:
+  etf_enabled: bool = False
+  etf_heads: int = 8
+  etf_dropout: float = 0.0
+
+For each backbone feature level src with shape (B*T, C, h, w):
+  1. reshape to (B*h*w, T, C)
+  2. apply LayerNorm + MultiheadAttention across the T axis
+  3. add the residual and reshape back to (B*T, C, h, w)
+
+The attention out projection is zero-initialised, so ETF starts as an
+identity residual block and can be enabled safely from pretrained weights.
+
+Training losses
+---------------
+Detection loss:
+  The standard RF-DETR SetCriterion is applied to every frame by flattening
+  predictions from (B,T,Q,*) to (B*T,Q,*). Targets are flattened in the same
+  order from targets[b][t].
+
+Count consistency loss:
+  L_num penalises flickering object counts inside one T-frame window.
+  It computes a differentiable soft count per frame and compares each count
+  to the median count of the same window.
+
+Optional distillation losses:
+  KD specific sampling uses teacher query slots.
+  KD general sampling uses sampled query slots.
+  CRRCD compares teacher/student decoder hidden-state relations per frame.
+
+Query modes
+-----------
+student:
+  Uses the student learnable query embeddings and returns (B,T,Q,*).
+
+teacher:
+  Uses registered teacher query embeddings and optional decoder input
+  injection for KD-DETR slot alignment. Returns (B*T,Q,*).
+
+general:
+  Uses sampled general queries for KD general sampling. Returns (B*T,Q,*).
+
+Dataset
+-------
+VideoStenosisDataset returns:
+  images:  (T, 3, img_size, img_size)
+  targets: list of T dictionaries with per-frame boxes and labels
+
+When distillation is enabled, it also returns teacher frames:
+  teacher: (T, 3, distill_teacher_resolution, distill_teacher_resolution)
+
+The same geometric replay is used for student and teacher frames so their
+spatial transforms stay aligned.
+
+Evaluation
+----------
+Evaluation runs query_mode="student" and reports:
+  - centre-frame metrics for parity with older single-frame comparisons
+  - all-frame metrics with the all/ prefix
+
+Checkpoints
+-----------
+Training writes to rfdetr_video/runs/<run_name>/:
+  best.pth
+  last.pth
+  config.json
+  best.txt
+  history.json
+  train.csv

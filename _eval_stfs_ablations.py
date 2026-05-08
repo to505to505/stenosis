@@ -382,10 +382,6 @@ def main():
 
     base_cfg = _load_cfg(run_dir)
     print(f"  Base cfg: T={base_cfg.T}  img_size={base_cfg.img_size}")
-    print(f"  Base STFS: iou_gate={base_cfg.stfs_match_iou_thresh}  "
-          f"score_thresh={base_cfg.stfs_track_score_thresh}  "
-          f"iou_w={base_cfg.stfs_iou_weight}  l1_w={base_cfg.stfs_l1_weight}  "
-          f"cls_w={base_cfg.stfs_cls_weight}  min_track_len={base_cfg.stfs_min_track_len}\n")
 
     # Load model once (weights are shared; only cfg pointers change at inference).
     model = _load_model(run_dir, base_cfg)
@@ -438,11 +434,6 @@ def main():
     header = (
         f"STFS Ablation Tests – {RUN_NAME}\n"
         f"Run dir: {run_dir}\n"
-        f"Base STFS params: "
-        f"iou_gate={base_cfg.stfs_match_iou_thresh}  "
-        f"score_thresh={base_cfg.stfs_track_score_thresh}  "
-        f"iou_w={base_cfg.stfs_iou_weight}  l1_w={base_cfg.stfs_l1_weight}  "
-        f"cls_w={base_cfg.stfs_cls_weight}\n"
     )
     full_text = header + "\n".join(full_text_parts) + comparison
     out_txt = run_dir / "ablation_results.txt"
@@ -453,12 +444,8 @@ def main():
     json_out = {
         "run": RUN_NAME,
         "base_cfg": {
-            "stfs_match_iou_thresh": base_cfg.stfs_match_iou_thresh,
-            "stfs_track_score_thresh": base_cfg.stfs_track_score_thresh,
-            "stfs_iou_weight": base_cfg.stfs_iou_weight,
-            "stfs_l1_weight": base_cfg.stfs_l1_weight,
-            "stfs_cls_weight": base_cfg.stfs_cls_weight,
-            "stfs_min_track_len": base_cfg.stfs_min_track_len,
+            "T": base_cfg.T,
+            "img_size": base_cfg.img_size,
         },
         "ablations": [
             {

@@ -1,1 +1,0 @@
-"""STQD-Det model components."""
