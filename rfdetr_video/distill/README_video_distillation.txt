@@ -40,11 +40,14 @@ Branch 3 - KD general sampling
   )
   loss: weighted KD-DETR distillation loss
 
-Centre-frame KD option
+Frame-scoped KD option
 ----------------------
-When distill_centre_frame_only=True, branches 2 and 3 slice the student and
-teacher windows to the centre frame before teacher/student KD calls. Branch 1
-still trains on the full T-frame window.
+By default, branches 2 and 3 distill all T frames. When
+distill_centre_frame_only=True, they slice the student and teacher windows to
+the centre frame before teacher/student KD calls. When distill_frame_offsets is
+set, only those offsets relative to the centre are distilled; for example,
+(-1, 1) distills the immediate left and right neighbours of the centre frame
+and skips all other frames. Branch 1 still trains on the full T-frame window.
 
 Query-slot alignment
 --------------------
@@ -92,6 +95,7 @@ Distillation:
   --num-general-queries
   --distill-teacher-ckpt
   --distill-centre-frame-only
+  --distill-frame-offsets -1 1
 
 CRRCD:
   --crrcd

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -75,6 +75,7 @@ class Config:
     distill_general_min_weight: float = 0.1
     distill_general_query_std: float = 0.02
     distill_centre_frame_only: bool = False
+    distill_frame_offsets: Optional[Tuple[int, ...]] = None
 
     # CRRCD: per-frame relational contrastive distillation
     crrcd_enabled: bool = False
@@ -96,6 +97,7 @@ class Config:
     etf_enabled: bool = False
     etf_heads: int = 8
     etf_dropout: float = 0.0
+    etf_spatial_radius: int = 0
 
     # Temporal Dropout (train-only frame masking)
     temporal_dropout_enabled: bool = False
@@ -111,3 +113,40 @@ class Config:
     dynamic_batch_resize_max_size: int = 800
     dynamic_batch_resize_step: int = 32
     dynamic_batch_resize_p: float = 1.0
+
+
+def resolve_distill_frame_indices(
+    num_frames: int,
+    cfg: Config,
+) -> Optional[List[int]]:
+    """Return temporal frame indices used by KD/CRRCD branches.
+
+    ``None`` means all frames are distilled. Otherwise, only the returned
+    indices are used and every other frame is skipped by distillation.
+    """
+    if num_frames <= 0:
+        raise ValueError(f"num_frames must be positive, got {num_frames}")
+
+    offsets = cfg.distill_frame_offsets
+    if offsets is None:
+        if not cfg.distill_centre_frame_only:
+            return None
+        offsets = (0,)
+
+    centre_index = num_frames // 2
+    indices: List[int] = []
+    for offset in offsets:
+        frame_index = centre_index + int(offset)
+        if frame_index < 0 or frame_index >= num_frames:
+            raise ValueError(
+                "distill_frame_offsets="
+                f"{tuple(offsets)} selects frame index {frame_index} outside "
+                f"a window with T={num_frames} and centre={centre_index}"
+            )
+        if frame_index in indices:
+            raise ValueError(
+                "distill_frame_offsets="
+                f"{tuple(offsets)} selects duplicate frame index {frame_index}"
+            )
+        indices.append(frame_index)
+    return indices

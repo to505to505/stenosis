@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from rfdetr_video.config import Config
+from rfdetr_video.config import Config, resolve_distill_frame_indices
 from rfdetr_video.consistency import num_consistency_loss
 
 
@@ -45,11 +45,100 @@ def test_no_unfold_in_codebase():
 def test_source_invariants():
     src = (ROOT / "rfdetr_video" / "model.py").read_text()
     assert "EarlyTemporalFusion" in src
+    assert "etf_spatial_radius" in src
     assert "reshape(BT" in src or "B * T" in src
     assert "_captured_decoder_hs" in src
     assert 'query_mode == "teacher"' in src
     assert '"general"' in src
     assert callable(num_consistency_loss)
+
+
+def test_etf_spatial_radius_zero_matches_temporal_only_reference():
+    from rfdetr_video.model import EarlyTemporalFusion
+
+    torch.manual_seed(7)
+    B, T, C, h, w = 2, 3, 4, 2, 3
+    etf = EarlyTemporalFusion(
+        d_model=C, n_heads=2, dropout=0.0, spatial_radius=0,
+    ).eval()
+    with torch.no_grad():
+        etf.attn.out_proj.weight.copy_(torch.eye(C))
+        etf.attn.out_proj.bias.zero_()
+
+    src = torch.randn(B * T, C, h, w)
+    with torch.no_grad():
+        out = etf([src.clone()], B, T)[0]
+
+        x = src.reshape(B, T, C, h, w)
+        x = x.permute(0, 3, 4, 1, 2).contiguous()
+        x = x.reshape(B * h * w, T, C)
+        x_n = etf.norm(x)
+        attn_out, _ = etf.attn(x_n, x_n, x_n)
+        ref = x + attn_out
+        ref = ref.reshape(B, h, w, T, C)
+        ref = ref.permute(0, 3, 4, 1, 2).contiguous()
+        ref = ref.reshape(B * T, C, h, w)
+
+    torch.testing.assert_close(out, ref)
+
+
+def test_etf_spatial_radius_one_builds_valid_local_window():
+    from rfdetr_video.model import EarlyTemporalFusion
+
+    B, T, C, h, w = 1, 2, 1, 3, 3
+    etf = EarlyTemporalFusion(d_model=C, n_heads=1, spatial_radius=1)
+    x = torch.arange(B * T * C * h * w, dtype=torch.float32)
+    x = x.reshape(B, T, C, h, w)
+
+    key_value, key_padding_mask = etf._local_key_value_tokens(x)
+
+    assert key_value.shape == (B * h * w, T * 9, C)
+    assert key_padding_mask.shape == (B * h * w, T * 9)
+
+    corner_index = 0
+    centre_index = 4
+    assert key_padding_mask[centre_index].sum().item() == 0
+    assert key_padding_mask[corner_index].sum().item() == 10
+    assert (~key_padding_mask[corner_index]).sum().item() == 8
+
+    corner_values = key_value[corner_index][~key_padding_mask[corner_index], 0]
+    expected_corner_values = torch.tensor(
+        [0.0, 9.0, 1.0, 10.0, 3.0, 12.0, 4.0, 13.0],
+    )
+    torch.testing.assert_close(corner_values, expected_corner_values)
+
+
+def test_etf_spatial_radius_one_forward_and_gradient():
+    from rfdetr_video.model import EarlyTemporalFusion
+
+    torch.manual_seed(11)
+    B, T, C, h, w = 2, 3, 4, 3, 3
+    etf = EarlyTemporalFusion(d_model=C, n_heads=2, spatial_radius=1)
+    src = torch.randn(B * T, C, h, w, requires_grad=True)
+
+    out = etf([src], B, T)[0]
+    assert out.shape == src.shape
+    assert torch.isfinite(out).all()
+
+    loss = out.square().mean()
+    loss.backward()
+    grads = [param.grad for param in etf.parameters() if param.grad is not None]
+    assert any(grad.abs().sum().item() > 0 for grad in grads)
+
+
+def test_distill_frame_index_resolution():
+    all_frames_cfg = Config(T=5)
+    assert resolve_distill_frame_indices(all_frames_cfg.T, all_frames_cfg) is None
+
+    centre_cfg = Config(T=5, distill_centre_frame_only=True)
+    assert resolve_distill_frame_indices(centre_cfg.T, centre_cfg) == [2]
+
+    neighbour_cfg = Config(T=5, distill_frame_offsets=(-1, 1))
+    assert resolve_distill_frame_indices(neighbour_cfg.T, neighbour_cfg) == [1, 3]
+
+    with pytest.raises(ValueError, match="outside"):
+        invalid_cfg = Config(T=1, distill_frame_offsets=(-1, 1))
+        resolve_distill_frame_indices(invalid_cfg.T, invalid_cfg)
 
 
 def test_consistency_loss_zero_when_identical():
@@ -128,6 +217,7 @@ def test_etf_receives_gradient():
         img_size=384,
         consistency_enabled=True,
         etf_enabled=True,
+        etf_spatial_radius=1,
         freeze_decoder=True,
     )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

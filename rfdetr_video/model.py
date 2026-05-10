@@ -28,8 +28,19 @@ from .config import Config
 class EarlyTemporalFusion(nn.Module):
     """Lightweight temporal self-attention applied to backbone feature maps."""
 
-    def __init__(self, d_model: int, n_heads: int = 8, dropout: float = 0.0):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int = 8,
+        dropout: float = 0.0,
+        spatial_radius: int = 0,
+    ):
         super().__init__()
+        self.spatial_radius = int(spatial_radius)
+        if self.spatial_radius < 0:
+            raise ValueError(
+                f"spatial_radius must be non-negative, got {spatial_radius}",
+            )
         self.norm = nn.LayerNorm(d_model)
         self.attn = nn.MultiheadAttention(
             embed_dim=d_model,
@@ -39,6 +50,46 @@ class EarlyTemporalFusion(nn.Module):
         )
         nn.init.zeros_(self.attn.out_proj.weight)
         nn.init.zeros_(self.attn.out_proj.bias)
+
+    def _local_key_value_tokens(
+        self,
+        x: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        B, T, C, h, w = x.shape
+        radius = self.spatial_radius
+        padded = x.new_zeros(B, T, C, h + 2 * radius, w + 2 * radius)
+        padded[:, :, :, radius: radius + h, radius: radius + w] = x
+
+        valid = torch.zeros(
+            1, 1, h + 2 * radius, w + 2 * radius,
+            device=x.device,
+            dtype=torch.bool,
+        )
+        valid[:, :, radius: radius + h, radius: radius + w] = True
+
+        token_windows = []
+        mask_windows = []
+        for y_offset in range(2 * radius + 1):
+            for x_offset in range(2 * radius + 1):
+                window = padded[
+                    :, :, :,
+                    y_offset: y_offset + h,
+                    x_offset: x_offset + w,
+                ]
+                tokens = window.permute(0, 3, 4, 1, 2).contiguous()
+                token_windows.append(tokens.reshape(B * h * w, T, C))
+
+                valid_window = valid[
+                    :, :,
+                    y_offset: y_offset + h,
+                    x_offset: x_offset + w,
+                ]
+                valid_window = valid_window.expand(B, 1, h, w)
+                valid_window = valid_window.permute(0, 2, 3, 1).contiguous()
+                valid_window = valid_window.reshape(B * h * w, 1)
+                mask_windows.append(~valid_window.expand(B * h * w, T))
+
+        return torch.cat(token_windows, dim=1), torch.cat(mask_windows, dim=1)
 
     def forward(
         self,
@@ -54,7 +105,18 @@ class EarlyTemporalFusion(nn.Module):
             x = x.reshape(B * h * w, T, C)
 
             x_n = self.norm(x)
-            attn_out, _ = self.attn(x_n, x_n, x_n)
+            if self.spatial_radius == 0:
+                attn_out, _ = self.attn(x_n, x_n, x_n)
+            else:
+                x_n_grid = x_n.reshape(B, h, w, T, C)
+                x_n_grid = x_n_grid.permute(0, 3, 4, 1, 2).contiguous()
+                key_value, key_padding_mask = self._local_key_value_tokens(x_n_grid)
+                attn_out, _ = self.attn(
+                    x_n,
+                    key_value,
+                    key_value,
+                    key_padding_mask=key_padding_mask,
+                )
             x = x + attn_out
 
             x = x.reshape(B, h, w, T, C)
@@ -142,6 +204,7 @@ class VideoRFDETR(nn.Module):
                 d_model=cfg.hidden_dim,
                 n_heads=cfg.etf_heads,
                 dropout=cfg.etf_dropout,
+                spatial_radius=cfg.etf_spatial_radius,
             )
         else:
             self.etf = None

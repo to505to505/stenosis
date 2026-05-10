@@ -1,0 +1,30 @@
+STFS Ablation Tests – video_7_etf_consistency_distill_crrcd
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/video_7_etf_consistency_distill_crrcd
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1347 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5180  AP50=0.2824  AP75=0.0244  AP5095=0.0824  F1=0.3388  Frag=0.48  FragRate=0.0336
+  MICRO (pooled)      AP30=0.3925  AP50=0.1142  AP75=0.0014  AP5095=0.0244  F1=0.2300  P=0.2089  R=0.2559  thr=0.0600  Frag=77  FragRate=0.0400
+  Dataset : dataset2_split_test  (31 videos, 1066 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5694  AP50=0.3530  AP75=0.0225  AP5095=0.1040  F1=0.3963  Frag=2.71  FragRate=0.0669
+  MICRO (pooled)      AP30=0.5742  AP50=0.2688  AP75=0.0094  AP5095=0.0711  F1=0.3608  P=0.4679  R=0.2936  thr=0.5300  Frag=84  FragRate=0.0788
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.3925  0.1142  0.0014  0.2300  0.2089  0.2559     77   0.0400
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.5742  0.2688  0.0094  0.3608  0.4679  0.2936     84   0.0788

@@ -115,18 +115,21 @@ def pascal_to_cxcywh_norm(boxes: np.ndarray, img_w: int, img_h: int) -> np.ndarr
 def build_train_augmentation(img_size: int) -> ReplayCompose:
     return ReplayCompose(
         [
-            # Allowed geometry (minimal anatomical distortion)
             A.HorizontalFlip(p=0.5),
-            A.Rotate(limit=10, border_mode=cv2.BORDER_CONSTANT, p=0.3),
-            # Simulate different X-ray contrast algorithms
+            A.Rotate(limit=20, border_mode=cv2.BORDER_CONSTANT, p=0.3),
+            A.Affine(
+                scale=(0.9, 1.1),
+                translate_percent=(-0.05, 0.05),
+                border_mode=cv2.BORDER_CONSTANT,
+                p=0.3,
+            ),
             A.RandomBrightnessContrast(
                 brightness_limit=0.3, contrast_limit=0.3, p=0.5,
             ),
             A.CLAHE(clip_limit=4.0, p=0.3),
             A.RandomGamma(gamma_limit=(80, 120), p=0.3),
-            # Simulate different radiation dose (noise) and tube focus (blur/sharpness)
-            A.GaussNoise(std_range=(0.01, 0.05), p=0.3),
             A.GaussianBlur(blur_limit=3, p=0.2),
+            A.GaussNoise(std_range=(0.01, 0.05), p=0.2),
             A.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.0), p=0.2),
         ],
         bbox_params=A.BboxParams(
@@ -148,7 +151,13 @@ def build_geometric_augmentation() -> ReplayCompose:
     return ReplayCompose(
         [
             A.HorizontalFlip(p=0.5),
-            A.Rotate(limit=10, border_mode=cv2.BORDER_CONSTANT, p=0.3),
+            A.Rotate(limit=20, border_mode=cv2.BORDER_CONSTANT, p=0.3),
+            A.Affine(
+                scale=(0.9, 1.1),
+                translate_percent=(-0.05, 0.05),
+                border_mode=cv2.BORDER_CONSTANT,
+                p=0.3,
+            ),
         ],
         bbox_params=A.BboxParams(
             format="pascal_voc",
@@ -168,8 +177,8 @@ def build_photometric_augmentation() -> A.Compose:
             ),
             A.CLAHE(clip_limit=4.0, p=0.3),
             A.RandomGamma(gamma_limit=(80, 120), p=0.3),
-            A.GaussNoise(std_range=(0.01, 0.05), p=0.3),
             A.GaussianBlur(blur_limit=3, p=0.2),
+            A.GaussNoise(std_range=(0.01, 0.05), p=0.2),
             A.Sharpen(alpha=(0.2, 0.5), lightness=(0.5, 1.0), p=0.2),
         ]
     )

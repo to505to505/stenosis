@@ -31,7 +31,7 @@ from rfdetr.utilities.dynamic_batch_resize import (
 os.environ["WANDB_CONSOLE"] = "off"
 os.environ["WANDB_SILENT"] = "true"
 
-from .config import Config
+from .config import Config, resolve_distill_frame_indices
 from .dataset import get_video_dataloader
 from .model import VideoRFDETR, build_criterion
 from .evaluate import evaluate
@@ -126,6 +126,19 @@ def _dynamic_batch_resize_config(cfg: Config) -> dict | None:
     }
 
 
+def _select_distill_frames(
+    images: torch.Tensor,
+    teacher_frames: torch.Tensor,
+    frame_indices: List[int] | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if frame_indices is None:
+        return images, teacher_frames
+    return (
+        images[:, frame_indices].contiguous(),
+        teacher_frames[:, frame_indices].contiguous(),
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 #  Train
 # ─────────────────────────────────────────────────────────────────────
@@ -181,9 +194,17 @@ def train(cfg: Config):
                 f"τ={cfg.crrcd_temperature}, β={cfg.crrcd_loss_weight}"
             )
 
+    distill_frame_indices = None
     if cfg.distill_enabled:
+        distill_frame_indices = resolve_distill_frame_indices(cfg.T, cfg)
+        distill_scope = (
+            "all frames" if distill_frame_indices is None
+            else f"frame_indices={distill_frame_indices}"
+        )
         print(
-            f"[KD] distill_centre_frame_only={cfg.distill_centre_frame_only}"
+            f"[KD] distill_centre_frame_only={cfg.distill_centre_frame_only}, "
+            f"distill_frame_offsets={cfg.distill_frame_offsets}, "
+            f"scope={distill_scope}"
         )
     print(
         f"[Video] etf_enabled={cfg.etf_enabled} "
@@ -288,16 +309,9 @@ def train(cfg: Config):
 
                 # ── Branch 2: CRRCD + KD specific (per-frame) ─────
                 if cfg.distill_enabled:
-                    # E2: optionally restrict KD/CRRCD to the centre frame
-                    # to keep the 2D teacher supervision focused on the
-                    # headline frame.
-                    if cfg.distill_centre_frame_only:
-                        c = T // 2
-                        kd_images = images[:, c:c + 1].contiguous()
-                        kd_teacher_frames = teacher_frames[:, c:c + 1].contiguous()
-                    else:
-                        kd_images = images
-                        kd_teacher_frames = teacher_frames
+                    kd_images, kd_teacher_frames = _select_distill_frames(
+                        images, teacher_frames, distill_frame_indices,
+                    )
                     with torch.no_grad():
                         t_out = teacher.forward_video(kd_teacher_frames)
                     student_kd_spec = model(
@@ -335,13 +349,9 @@ def train(cfg: Config):
                     gen_q = model.sample_general_queries(
                         Q_g, device=device, dtype=images.dtype,
                     )
-                    if cfg.distill_centre_frame_only:
-                        c = T // 2
-                        gen_images = images[:, c:c + 1].contiguous()
-                        gen_teacher_frames = teacher_frames[:, c:c + 1].contiguous()
-                    else:
-                        gen_images = images
-                        gen_teacher_frames = teacher_frames
+                    gen_images, gen_teacher_frames = _select_distill_frames(
+                        images, teacher_frames, distill_frame_indices,
+                    )
                     with torch.no_grad():
                         t_out_gen = teacher.forward_video_general(
                             gen_teacher_frames,
@@ -517,9 +527,18 @@ def parse_args():
     p.add_argument("--crrcd-num-bg", type=int, default=None)
     p.add_argument("--crrcd-num-negatives", type=int, default=None)
     p.add_argument("--crrcd-temperature", type=float, default=None)
-    p.add_argument("--distill-centre-frame-only", action="store_true",
-                    help="Restrict KD/CRRCD branches to the centre frame "
-                        "of each window (T_kd=1).")
+    distill_frame_group = p.add_mutually_exclusive_group()
+    distill_frame_group.add_argument(
+        "--distill-centre-frame-only", action="store_true",
+        help="Restrict KD/CRRCD branches to the centre frame "
+            "of each window (T_kd=1).",
+    )
+    distill_frame_group.add_argument(
+        "--distill-frame-offsets", type=int, nargs="+", default=None,
+        metavar="OFFSET",
+        help="Restrict KD/CRRCD to frame offsets relative to the centre. "
+            "Use '-1 1' to distill only the left and right centre neighbours.",
+    )
 
     # Consistency
     p.add_argument("--consistency-weight", type=float, default=None)
@@ -536,6 +555,9 @@ def parse_args():
                    help="Number of attention heads in the ETF layer (default 8).")
     p.add_argument("--etf-dropout", type=float, default=None,
                    help="Attention dropout for ETF (default 0.0).")
+    p.add_argument("--etf-spatial-radius", type=int, default=None,
+                   help="Spatial radius for ETF key/value tokens. Use 0 for "
+                        "temporal-only attention, 1 for a 3x3 window.")
 
     # Temporal Dropout
     p.add_argument("--temporal-dropout", action="store_true",
@@ -587,6 +609,12 @@ if __name__ == "__main__":
         cfg_kwargs["crrcd_enabled"] = True
     if args.distill_centre_frame_only:
         cfg_kwargs["distill_centre_frame_only"] = True
+    _maybe(
+        cfg_kwargs,
+        "distill_frame_offsets",
+        args.distill_frame_offsets,
+        lambda values: tuple(int(value) for value in values),
+    )
     _maybe(cfg_kwargs, "crrcd_loss_weight", args.crrcd_weight, float)
     _maybe(cfg_kwargs, "crrcd_num_fg", args.crrcd_num_fg, int)
     _maybe(cfg_kwargs, "crrcd_num_bg", args.crrcd_num_bg, int)
@@ -598,6 +626,7 @@ if __name__ == "__main__":
         cfg_kwargs["etf_enabled"] = True
     _maybe(cfg_kwargs, "etf_heads", args.etf_heads, int)
     _maybe(cfg_kwargs, "etf_dropout", args.etf_dropout, float)
+    _maybe(cfg_kwargs, "etf_spatial_radius", args.etf_spatial_radius, int)
     if args.temporal_dropout:
         cfg_kwargs["temporal_dropout_enabled"] = True
     _maybe(cfg_kwargs, "temporal_dropout_prob", args.temporal_dropout_prob, float)

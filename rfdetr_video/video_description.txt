@@ -49,11 +49,21 @@ It is optional and controlled by:
   etf_enabled: bool = False
   etf_heads: int = 8
   etf_dropout: float = 0.0
+  etf_spatial_radius: int = 0
 
+With etf_spatial_radius=0, ETF keeps the original temporal-only behavior.
 For each backbone feature level src with shape (B*T, C, h, w):
   1. reshape to (B*h*w, T, C)
   2. apply LayerNorm + MultiheadAttention across the T axis
   3. add the residual and reshape back to (B*T, C, h, w)
+
+With etf_spatial_radius=1, each query token at one spatial position keeps
+the same (B*h*w, T, C) query sequence, but its key/value tokens come from
+the 3x3 spatial window around that position in every frame:
+  key/value length = T * (2*radius + 1)^2 = T * 9
+
+Out-of-image neighbours at feature-map borders are masked before softmax,
+so corner positions attend only to valid in-image tokens.
 
 The attention out projection is zero-initialised, so ETF starts as an
 identity residual block and can be enabled safely from pretrained weights.
@@ -74,6 +84,8 @@ Optional distillation losses:
   KD specific sampling uses teacher query slots.
   KD general sampling uses sampled query slots.
   CRRCD compares teacher/student decoder hidden-state relations per frame.
+  distill_frame_offsets can restrict KD/CRRCD to selected offsets around the
+  centre frame, e.g. (-1, 1) for the immediate left and right neighbours only.
 
 Query modes
 -----------
