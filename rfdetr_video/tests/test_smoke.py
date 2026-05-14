@@ -21,6 +21,11 @@ from rfdetr_video.config import Config, resolve_distill_frame_indices
 from rfdetr_video.consistency import num_consistency_loss
 from rfdetr_video.ema import ModelEMA
 from rfdetr_video.schedule import build_scheduler
+from rfdetr_video.selection import (
+    composite_selection_score,
+    SmoothedTracker,
+    EarlyStopper,
+)
 
 
 HEAVY = os.environ.get("RFDETR_VIDEO_HEAVY") == "1"
@@ -547,3 +552,36 @@ def test_build_scheduler_rejects_unknown():
     opt = _two_group_optimizer()
     with pytest.raises(ValueError, match="lr_schedule"):
         build_scheduler(opt, cfg)
+
+
+def test_composite_selection_score_weighted_sum():
+    metrics = {"AP@0.3": 1.0, "AP@0.5": 1.0, "F1": 1.0, "other": 9.0}
+    assert composite_selection_score(metrics, (0.5, 0.3, 0.2)) == pytest.approx(1.0)
+    metrics2 = {"AP@0.3": 1.0, "AP@0.5": 0.0, "F1": 0.0}
+    assert composite_selection_score(metrics2, (0.5, 0.3, 0.2)) == pytest.approx(0.5)
+    # missing keys default to 0.0
+    assert composite_selection_score({}, (0.5, 0.3, 0.2)) == pytest.approx(0.0)
+
+
+def test_smoothed_tracker_rolling_mean():
+    tracker = SmoothedTracker(k=3)
+    assert tracker.add(1.0) == pytest.approx(1.0)
+    assert tracker.add(2.0) == pytest.approx(1.5)
+    assert tracker.add(3.0) == pytest.approx(2.0)
+    assert tracker.add(4.0) == pytest.approx(3.0)  # window = [2,3,4]
+
+
+def test_early_stopper_triggers_after_patience():
+    stopper = EarlyStopper(patience=2, min_delta=0.0)
+    assert stopper.update(0.5) is False   # new best
+    assert stopper.update(0.4) is False   # bad 1
+    assert stopper.update(0.4) is True    # bad 2 -> stop
+
+
+def test_early_stopper_resets_on_improvement():
+    stopper = EarlyStopper(patience=2, min_delta=0.0)
+    assert stopper.update(0.5) is False
+    assert stopper.update(0.4) is False   # bad 1
+    assert stopper.update(0.6) is False   # new best -> reset
+    assert stopper.update(0.5) is False   # bad 1
+    assert stopper.update(0.5) is True    # bad 2 -> stop
