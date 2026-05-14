@@ -10,6 +10,7 @@ not run in CI by default.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -619,3 +620,47 @@ def test_get_param_groups_three_way_split():
     tf_param_ids = {id(p) for p in model.transformer.parameters() if p.requires_grad}
     pre_group_ids = {id(p) for p in by_lr[3e-5]}
     assert tf_param_ids and tf_param_ids.issubset(pre_group_ids)
+
+
+def test_train_source_wires_regime_fix():
+    src = (ROOT / "rfdetr_video" / "train.py").read_text()
+    assert "from .ema import ModelEMA" in src
+    assert "from .schedule import build_scheduler" in src
+    assert "from .selection import" in src
+    assert "build_scheduler(optimizer, cfg)" in src
+    assert "ema.update(model)" in src
+    assert "ema.applied_to(model)" in src
+    assert "composite_selection_score" in src
+    assert "EarlyStopper" in src
+    # the old greedy MultiStepLR construction is gone
+    assert "MultiStepLR(" not in src
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+@pytest.mark.skipif(
+    not (ROOT / "data" / "dataset2_split").exists(),
+    reason="data/dataset2_split not available",
+)
+def test_train_one_epoch_smoke(tmp_path):
+    from rfdetr_video.train import train
+    cfg = Config(
+        data_root=ROOT / "data" / "dataset2_split",
+        output_dir=tmp_path,
+        run_name="smoke",
+        epochs=1,
+        batch_size=1,
+        num_workers=0,
+        T=3,
+        img_size=384,
+        distill_enabled=False,
+        consistency_enabled=False,
+        etf_enabled=True,
+        ema_enabled=True,
+        early_stop_enabled=False,
+        wandb_enabled=False,
+    )
+    run_dir = train(cfg)
+    assert (run_dir / "best.pth").exists()
+    assert (run_dir / "last_ema.pth").exists()
+    history = json.loads((run_dir / "history.json").read_text())
+    assert history and "ema/AP@0.3" in history[0] and "sel_smoothed" in history[0]

@@ -17,6 +17,7 @@ import random
 import time
 from dataclasses import asdict
 from pathlib import Path
+from contextlib import nullcontext as _nullcontext
 from typing import Dict, List
 
 import numpy as np
@@ -41,6 +42,9 @@ from .distill import (
     distillation_loss,
     CRRCDLoss,
 )
+from .ema import ModelEMA
+from .schedule import build_scheduler
+from .selection import composite_selection_score, SmoothedTracker, EarlyStopper
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -225,10 +229,9 @@ def train(cfg: Config):
     param_groups = model.get_param_groups()
     optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg.weight_decay)
     base_lrs = [pg["lr"] for pg in optimizer.param_groups]
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=list(cfg.lr_step_milestones), gamma=cfg.lr_gamma,
-    )
+    scheduler = build_scheduler(optimizer, cfg)
     scaler = GradScaler(enabled=cfg.amp)
+    ema = ModelEMA(model, decay=cfg.ema_decay) if cfg.ema_enabled else None
 
     with open(run_dir / "config.json", "w") as f:
         cfg_dict = asdict(cfg)
@@ -249,11 +252,16 @@ def train(cfg: Config):
             print("[WARN] wandb not installed, disabling")
             cfg.wandb_enabled = False
 
-    best_map30 = 0.0
+    best_sel = float("-inf")
     best_metrics: dict = {}
     best_epoch = 0
     history: list = []
     global_step = 0
+    sel_tracker = SmoothedTracker(cfg.selection_smooth_k)
+    early_stopper = (
+        EarlyStopper(cfg.early_stop_patience, cfg.early_stop_min_delta)
+        if cfg.early_stop_enabled else None
+    )
 
     for epoch in range(cfg.epochs):
         model.train()
@@ -385,6 +393,8 @@ def train(cfg: Config):
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
+                if ema is not None:
+                    ema.update(model)
 
             global_step += 1
 
@@ -425,40 +435,74 @@ def train(cfg: Config):
 
         if (epoch + 1) % cfg.eval_interval == 0:
             metrics = evaluate(model, val_loader, criterion, postprocess, cfg, device)
-            record = {"epoch": epoch + 1, "train_loss": train_loss, **metrics}
+            if ema is not None:
+                with ema.applied_to(model):
+                    ema_metrics = evaluate(
+                        model, val_loader, criterion, postprocess, cfg, device,
+                    )
+            else:
+                ema_metrics = metrics
+            sel = composite_selection_score(ema_metrics, cfg.selection_weights)
+            sel_smoothed = sel_tracker.add(sel)
+            record = {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                **metrics,
+                **{f"ema/{k}": v for k, v in ema_metrics.items()},
+                "sel": sel,
+                "sel_smoothed": sel_smoothed,
+            }
             history.append(record)
             print(
-                f"  val — mAP30={metrics['AP@0.3']:.4f}  "
-                f"mAP50={metrics['AP@0.5']:.4f}  "
-
-                f"F1={metrics['F1']:.4f}  "
-                f"all/mAP30={metrics.get('all/AP@0.3', 0):.4f}  "
+                f"  val — mAP30={metrics['AP@0.3']:.4f} "
+                f"| ema mAP30={ema_metrics['AP@0.3']:.4f} "
+                f"ema mAP50={ema_metrics['AP@0.5']:.4f} "
+                f"ema F1={ema_metrics['F1']:.4f} "
+                f"| sel={sel:.4f} sel_smoothed={sel_smoothed:.4f} "
                 f"val_loss={metrics.get('val_loss', 0):.4f}"
             )
             if cfg.wandb_enabled:
                 import wandb
-                log_dict = {"epoch": epoch + 1, "train_loss": train_loss}
+                log_dict = {"epoch": epoch + 1, "train_loss": train_loss,
+                            "sel": sel, "sel_smoothed": sel_smoothed}
                 for k, v in metrics.items():
                     log_dict[f"val/{k}"] = v
+                for k, v in ema_metrics.items():
+                    log_dict[f"val_ema/{k}"] = v
                 wandb.log(log_dict, step=global_step)
-            if metrics["AP@0.3"] > best_map30:
-                best_map30 = metrics["AP@0.3"]
-                best_metrics = metrics.copy()
+            if sel_smoothed > best_sel:
+                best_sel = sel_smoothed
+                best_metrics = {**ema_metrics, "sel_smoothed": sel_smoothed}
                 best_epoch = epoch + 1
-                torch.save(
-                    {"model": model.state_dict(), "epoch": epoch + 1, **metrics},
-                    run_dir / "best.pth",
-                )
+                ema_ctx = ema.applied_to(model) if ema is not None else _nullcontext()
+                with ema_ctx:
+                    torch.save(
+                        {"model": model.state_dict(), "epoch": epoch + 1,
+                         **ema_metrics},
+                        run_dir / "best.pth",
+                    )
                 write_best_txt(run_dir, best_metrics, best_epoch, cfg)
-                print(f"  ★ New best micro mAP@0.3={best_map30:.4f}")
+                print(f"  ★ New best smoothed sel={best_sel:.4f} (epoch {epoch + 1})")
             with open(run_dir / "history.json", "w") as _f:
                 json.dump(history, _f, indent=2)
             save_train_csv(run_dir, history)
+            if early_stopper is not None and early_stopper.update(sel_smoothed):
+                print(
+                    f"  ⨯ Early stop — no smoothed-sel improvement for "
+                    f"{cfg.early_stop_patience} evals"
+                )
+                break
 
         torch.save(
             {"model": model.state_dict(), "epoch": epoch + 1},
             run_dir / "last.pth",
         )
+        if ema is not None:
+            with ema.applied_to(model):
+                torch.save(
+                    {"model": model.state_dict(), "epoch": epoch + 1},
+                    run_dir / "last_ema.pth",
+                )
 
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
@@ -473,7 +517,11 @@ def train(cfg: Config):
         wandb.run.summary["best/epoch"] = best_epoch
         wandb.finish()
 
-    print(f"\nTraining complete. Best micro mAP@0.3={best_map30:.4f}")
+    print(
+        f"\nTraining complete. Best EMA mAP@0.3="
+        f"{best_metrics.get('AP@0.3', 0):.4f} "
+        f"(smoothed sel={best_sel:.4f}, epoch {best_epoch})"
+    )
     print(f"Outputs saved to {run_dir}")
 
     # ── Free VRAM ─────────────────────────────────────────────────────
