@@ -15,6 +15,11 @@
 #   R5  EMA off
 set -euo pipefail
 
+[[ -d rfdetr_runs && -d data ]] || {
+  echo "overfitting_sweep.sh: run from the repo root (rfdetr_runs/ and data/ not found)" >&2
+  exit 1
+}
+
 RUN="${1:?usage: overfitting_sweep.sh <R0|R1|R2|R3|R4|R5>}"
 CKPT="rfdetr_runs/rfdetr_small_arcade2x_512_reg/checkpoint_best_regular.pth"
 

@@ -692,12 +692,20 @@ def test_overfitting_sweep_script_valid_and_complete():
     # bash syntax check
     syntax = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert syntax.returncode == 0, syntax.stderr
-    # all six run names are handled
+    # all six run names are handled as case branches (not just mentioned in comments)
     text = script.read_text()
     for run in ("R0", "R1", "R2", "R3", "R4", "R5"):
-        assert run in text, f"sweep run {run} not handled"
+        assert any(
+            line.lstrip().startswith(run + ")")
+            for line in text.splitlines()
+        ), f"sweep run {run} not in case block"
     # unknown run name exits non-zero
     bad = subprocess.run(
         ["bash", str(script), "RX"], capture_output=True, text=True, cwd=str(ROOT),
     )
     assert bad.returncode != 0
+    # missing argument also exits non-zero
+    noarg = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, cwd=str(ROOT),
+    )
+    assert noarg.returncode != 0
