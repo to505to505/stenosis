@@ -678,3 +678,9 @@ def test_train_one_epoch_smoke(tmp_path):
     assert (run_dir / "last_ema.pth").exists()
     history = json.loads((run_dir / "history.json").read_text())
     assert history and "ema/AP@0.3" in history[0] and "sel_smoothed" in history[0]
+
+
+def test_eval_ablations_main_accepts_run_name():
+    src = (ROOT / "_eval_stfs_ablations.py").read_text()
+    assert "def main(run_name" in src
+    assert "main(sys.argv[1]" in src

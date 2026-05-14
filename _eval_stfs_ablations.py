@@ -14,6 +14,7 @@ Outputs (written to runs/<RUN_NAME>/):
 from __future__ import annotations
 
 import json
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -373,10 +374,10 @@ def _comparison_table(all_results: list) -> str:
 
 # ────────────────────────────────── main ────────────────────────────────────
 
-def main():
-    run_dir = ROOT / "rfdetr_video" / "runs" / RUN_NAME
+def main(run_name: str = RUN_NAME):
+    run_dir = ROOT / "rfdetr_video" / "runs" / run_name
     print(f"\n{'#' * 80}")
-    print(f"# STFS Ablation Tests – {RUN_NAME}")
+    print(f"# STFS Ablation Tests – {run_name}")
     print(f"# {run_dir}")
     print(f"{'#' * 80}\n")
 
@@ -432,7 +433,7 @@ def main():
 
     # ── Save text report ────────────────────────────────────────────
     header = (
-        f"STFS Ablation Tests – {RUN_NAME}\n"
+        f"STFS Ablation Tests – {run_name}\n"
         f"Run dir: {run_dir}\n"
     )
     full_text = header + "\n".join(full_text_parts) + comparison
@@ -442,7 +443,7 @@ def main():
 
     # ── Save JSON ───────────────────────────────────────────────────
     json_out = {
-        "run": RUN_NAME,
+        "run": run_name,
         "base_cfg": {
             "T": base_cfg.T,
             "img_size": base_cfg.img_size,
@@ -463,4 +464,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else RUN_NAME)
