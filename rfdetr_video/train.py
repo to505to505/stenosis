@@ -268,6 +268,7 @@ def train(cfg: Config):
         criterion.train()
         epoch_losses: dict = {}
         t0 = time.time()
+        stop_early = False
 
         for batch_idx, batch in enumerate(train_loader):
             if use_teacher_frame:
@@ -491,7 +492,7 @@ def train(cfg: Config):
                     f"  ⨯ Early stop — no smoothed-sel improvement for "
                     f"{cfg.early_stop_patience} evals"
                 )
-                break
+                stop_early = True
 
         torch.save(
             {"model": model.state_dict(), "epoch": epoch + 1},
@@ -503,6 +504,8 @@ def train(cfg: Config):
                     {"model": model.state_dict(), "epoch": epoch + 1},
                     run_dir / "last_ema.pth",
                 )
+        if stop_early:
+            break
 
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
