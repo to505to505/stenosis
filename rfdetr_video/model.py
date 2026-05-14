@@ -164,6 +164,15 @@ def build_criterion(cfg: Config):
     return criterion, postprocessors
 
 
+def _param_group_for(name: str) -> str:
+    """Classify a parameter name into an LR group: backbone / new / pretrained."""
+    if name.startswith("backbone"):
+        return "backbone"
+    if name.startswith("etf") or name.startswith("crrcd"):
+        return "new"
+    return "pretrained"
+
+
 class VideoRFDETR(nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
@@ -437,18 +446,23 @@ class VideoRFDETR(nn.Module):
         return out
 
     def get_param_groups(self):
-        backbone_params = []
-        decoder_params = []
+        buckets = {"backbone": [], "pretrained": [], "new": []}
         for name, param in self.named_parameters():
             if not param.requires_grad:
                 continue
-            if "backbone" in name:
-                backbone_params.append(param)
-            else:
-                decoder_params.append(param)
+            buckets[_param_group_for(name)].append(param)
+        print(
+            f"[param groups] pretrained={len(buckets['pretrained'])} "
+            f"new={len(buckets['new'])} backbone={len(buckets['backbone'])}"
+        )
+        assert buckets["pretrained"], (
+            "no pretrained-detector params found — check _param_group_for prefixes"
+        )
         groups = []
-        if decoder_params:
-            groups.append({"params": decoder_params, "lr": self.cfg.lr})
-        if backbone_params:
-            groups.append({"params": backbone_params, "lr": self.cfg.lr_backbone})
+        if buckets["pretrained"]:
+            groups.append({"params": buckets["pretrained"], "lr": self.cfg.lr_pretrained})
+        if buckets["new"]:
+            groups.append({"params": buckets["new"], "lr": self.cfg.lr})
+        if buckets["backbone"]:
+            groups.append({"params": buckets["backbone"], "lr": self.cfg.lr_backbone})
         return groups

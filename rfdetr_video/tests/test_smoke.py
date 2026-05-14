@@ -585,3 +585,36 @@ def test_early_stopper_resets_on_improvement():
     assert stopper.update(0.6) is False   # new best -> reset
     assert stopper.update(0.5) is False   # bad 1
     assert stopper.update(0.5) is True    # bad 2 -> stop
+
+
+def test_param_group_for_classifies_by_name():
+    from rfdetr_video.model import _param_group_for
+    assert _param_group_for("backbone.blocks.0.attn.qkv.weight") == "backbone"
+    assert _param_group_for("etf.attn.in_proj_weight") == "new"
+    assert _param_group_for("etf.norm.weight") == "new"
+    assert _param_group_for("crrcd.relation_t.0.weight") == "new"
+    assert _param_group_for("transformer.decoder.layers.0.self_attn.weight") == "pretrained"
+    assert _param_group_for("class_embed.weight") == "pretrained"
+    assert _param_group_for("bbox_embed.layers.0.weight") == "pretrained"
+    assert _param_group_for("refpoint_embed.weight") == "pretrained"
+    assert _param_group_for("query_feat.weight") == "pretrained"
+
+
+@pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
+def test_get_param_groups_three_way_split():
+    from rfdetr_video.model import VideoRFDETR
+    cfg = Config(etf_enabled=True, lr=1e-4, lr_pretrained=3e-5, freeze_backbone=True)
+    model = VideoRFDETR(cfg)
+    groups = model.get_param_groups()
+    # backbone frozen -> only pretrained + new groups remain
+    lrs = sorted(g["lr"] for g in groups)
+    assert lrs == [3e-5, 1e-4]
+    by_lr = {g["lr"]: g["params"] for g in groups}
+    # ETF params land in the 1e-4 (new) group
+    etf_param_ids = {id(p) for p in model.etf.parameters()}
+    new_group_ids = {id(p) for p in by_lr[1e-4]}
+    assert etf_param_ids and etf_param_ids.issubset(new_group_ids)
+    # transformer params land in the 3e-5 (pretrained) group
+    tf_param_ids = {id(p) for p in model.transformer.parameters() if p.requires_grad}
+    pre_group_ids = {id(p) for p in by_lr[3e-5]}
+    assert tf_param_ids and tf_param_ids.issubset(pre_group_ids)
