@@ -976,6 +976,7 @@ def test_train_cli_exposes_regime_flags():
     for flag in (
         "--lr-pretrained", "--lr-schedule", "--weight-decay",
         "--no-ema", "--ema-decay", "--no-early-stop", "--early-stop-patience",
+        "--eval-interval",
     ):
         assert flag in out.stdout, f"missing CLI flag: {flag}"
 ```
@@ -1001,6 +1002,8 @@ In `rfdetr_video/train.py` `parse_args()`, immediately after the `--img-size` li
     p.add_argument("--ema-decay", type=float, default=None)
     p.add_argument("--no-early-stop", action="store_true")
     p.add_argument("--early-stop-patience", type=int, default=None)
+    p.add_argument("--eval-interval", type=int, default=None,
+                   help="Run validation every N epochs (default 1).")
 ```
 
 - [ ] **Step 3b: Wire the arguments into `cfg_kwargs`**
@@ -1017,6 +1020,7 @@ In `rfdetr_video/train.py` `__main__`, immediately after the `_maybe(cfg_kwargs,
     if args.no_early_stop:
         cfg_kwargs["early_stop_enabled"] = False
     _maybe(cfg_kwargs, "early_stop_patience", args.early_stop_patience, int)
+    _maybe(cfg_kwargs, "eval_interval", args.eval_interval, int)
 ```
 
 - [ ] **Step 3c: Update the `--epochs` default**
@@ -1170,6 +1174,7 @@ Create `rfdetr_video/tools/overfitting_sweep.sh`:
 #
 # Base model config = the current "main" (etf + distill + crrcd + consistency,
 # centre-frame KD). Only training-regime knobs vary between runs.
+# All runs: batch-size 16, validation every 2 epochs (--eval-interval 2).
 #
 #   R0  anchor: diff-LR (pre 3e-5 / new 1e-4), cosine, 20 ep, etf_dropout 0.1, wd 1e-3
 #   R1  no differential LR (pretrained = new = 1e-4)
@@ -1207,9 +1212,9 @@ python -m rfdetr_video.train \
   --dataset data/dataset2_split \
   --checkpoint "$CKPT" \
   --run-name "video_overfit_${RUN}" \
-  --img-size 512 --T 5 --batch-size 4 --grad-accum 1 --num-workers 4 \
+  --img-size 512 --T 5 --batch-size 16 --grad-accum 1 --num-workers 4 \
   --etf --distill --crrcd --distill-centre-frame-only \
-  --lr-schedule cosine \
+  --lr-schedule cosine --eval-interval 2 \
   --lr "$LR_NEW" --lr-pretrained "$LR_PRE" \
   --epochs "$EPOCHS" --etf-dropout "$ETF_DROPOUT" --weight-decay "$WD" \
   $EMA_FLAG
