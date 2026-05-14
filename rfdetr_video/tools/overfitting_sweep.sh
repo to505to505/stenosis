@@ -5,7 +5,7 @@
 #
 # Base model config = the current "main" (etf + distill + crrcd + consistency,
 # centre-frame KD). Only training-regime knobs vary between runs.
-# All runs: batch-size 16, validation every 2 epochs (--eval-interval 2).
+# All runs: batch-size 4, validation every 2 epochs (--eval-interval 2).
 #
 #   R0  anchor: diff-LR (pre 3e-5 / new 1e-4), cosine, 20 ep, etf_dropout 0.1, wd 1e-3
 #   R1  no differential LR (pretrained = new = 1e-4)
@@ -48,7 +48,7 @@ python -m rfdetr_video.train \
   --dataset data/dataset2_split \
   --checkpoint "$CKPT" \
   --run-name "video_overfit_${RUN}" \
-  --img-size 512 --T 5 --batch-size 16 --grad-accum 1 --num-workers 4 \
+  --img-size 512 --T 5 --batch-size 4 --grad-accum 1 --num-workers 4 \
   --etf --distill --crrcd --distill-centre-frame-only \
   --lr-schedule cosine --eval-interval 2 \
   --lr "$LR_NEW" --lr-pretrained "$LR_PRE" \
