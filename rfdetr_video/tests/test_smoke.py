@@ -472,3 +472,38 @@ def test_model_ema_applied_to_round_trips():
             assert torch.all(p == 7.0)
     for n, p in model.named_parameters():
         torch.testing.assert_close(p.detach(), original[n])
+
+
+def test_model_ema_applied_to_leaves_frozen_params_untouched():
+    import torch
+    model = _tiny_model_with_frozen()
+    ema = ModelEMA(model, decay=0.5)
+    for n in ema.shadow:
+        ema.shadow[n].fill_(7.0)
+    frozen_before = {
+        n: p.detach().clone()
+        for n, p in model.named_parameters() if not p.requires_grad
+    }
+    assert frozen_before  # the helper does have a frozen layer
+    with ema.applied_to(model):
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                assert not torch.all(p == 7.0)  # frozen params NOT swapped
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            torch.testing.assert_close(p.detach(), frozen_before[n])
+
+
+def test_model_ema_applied_to_restores_on_exception():
+    import torch
+    import torch.nn as nn
+    model = nn.Linear(2, 2)
+    ema = ModelEMA(model, decay=0.5)
+    for n in ema.shadow:
+        ema.shadow[n].fill_(99.0)
+    original = {n: p.detach().clone() for n, p in model.named_parameters()}
+    with pytest.raises(RuntimeError):
+        with ema.applied_to(model):
+            raise RuntimeError("boom")
+    for n, p in model.named_parameters():
+        torch.testing.assert_close(p.detach(), original[n])

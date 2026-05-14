@@ -8,6 +8,7 @@ restores the live parameters, so no second full model is held in memory.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from contextlib import contextmanager
 
 import torch
@@ -33,7 +34,8 @@ class ModelEMA:
             )
 
     @contextmanager
-    def applied_to(self, model: nn.Module):
+    def applied_to(self, model: nn.Module) -> Generator[nn.Module, None, None]:
+        """Swap EMA weights into ``model`` for the block. Do not call ``update`` while inside this context."""
         backup = {}
         with torch.no_grad():
             for name, param in model.named_parameters():
