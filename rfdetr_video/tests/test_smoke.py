@@ -19,6 +19,7 @@ import torch
 
 from rfdetr_video.config import Config, resolve_distill_frame_indices
 from rfdetr_video.consistency import num_consistency_loss
+from rfdetr_video.ema import ModelEMA
 
 
 HEAVY = os.environ.get("RFDETR_VIDEO_HEAVY") == "1"
@@ -410,3 +411,64 @@ def test_distill_one_step():
 
     for name, param in teacher.named_parameters():
         assert param.grad is None, f"teacher param '{name}' received gradient"
+
+
+def _tiny_model_with_frozen():
+    import torch.nn as nn
+    model = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 2))
+    # freeze the second layer
+    for p in model[1].parameters():
+        p.requires_grad_(False)
+    return model
+
+
+def test_model_ema_tracks_only_trainable_params():
+    import torch.nn as nn
+    model = _tiny_model_with_frozen()
+    ema = ModelEMA(model, decay=0.9)
+    # shadow holds exactly the trainable param names
+    trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+    assert set(ema.shadow.keys()) == trainable
+
+
+def test_model_ema_update_math():
+    import torch
+    import torch.nn as nn
+    torch.manual_seed(0)
+    model = nn.Linear(3, 3)
+    ema = ModelEMA(model, decay=0.8)
+    before = {n: v.clone() for n, v in ema.shadow.items()}
+    with torch.no_grad():
+        for p in model.parameters():
+            p.add_(1.0)  # move the live model
+    ema.update(model)
+    for n, p in model.named_parameters():
+        expected = before[n] * 0.8 + p.detach() * 0.2
+        torch.testing.assert_close(ema.shadow[n], expected)
+
+
+def test_model_ema_constant_param_stays_constant():
+    import torch
+    import torch.nn as nn
+    model = nn.Linear(3, 3)
+    ema = ModelEMA(model, decay=0.5)
+    snapshot = {n: v.clone() for n, v in ema.shadow.items()}
+    ema.update(model)  # model unchanged -> EMA unchanged
+    for n in snapshot:
+        torch.testing.assert_close(ema.shadow[n], snapshot[n])
+
+
+def test_model_ema_applied_to_round_trips():
+    import torch
+    import torch.nn as nn
+    model = nn.Linear(2, 2)
+    ema = ModelEMA(model, decay=0.5)
+    # force a known EMA value
+    for n in ema.shadow:
+        ema.shadow[n].fill_(7.0)
+    original = {n: p.detach().clone() for n, p in model.named_parameters()}
+    with ema.applied_to(model):
+        for n, p in model.named_parameters():
+            assert torch.all(p == 7.0)
+    for n, p in model.named_parameters():
+        torch.testing.assert_close(p.detach(), original[n])
