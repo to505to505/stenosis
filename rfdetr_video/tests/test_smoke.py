@@ -636,6 +636,20 @@ def test_train_source_wires_regime_fix():
     assert "MultiStepLR(" not in src
 
 
+def test_train_cli_exposes_regime_flags():
+    out = subprocess.run(
+        ["python", "-m", "rfdetr_video.train", "--help"],
+        capture_output=True, text=True, cwd=str(ROOT),
+    )
+    assert out.returncode == 0, out.stderr
+    for flag in (
+        "--lr-pretrained", "--lr-schedule", "--weight-decay",
+        "--no-ema", "--ema-decay", "--no-early-stop", "--early-stop-patience",
+        "--eval-interval",
+    ):
+        assert flag in out.stdout, f"missing CLI flag: {flag}"
+
+
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
 @pytest.mark.skipif(
     not (ROOT / "data" / "dataset2_split").exists(),

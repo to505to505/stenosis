@@ -551,7 +551,7 @@ def parse_args():
             "--consistency-{offset,top-k,kl-weight,l1-weight}."
         )
     )
-    p.add_argument("--epochs", type=int, default=50)
+    p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--batch-size", type=int, default=2)
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--T", type=int, default=5)
@@ -565,6 +565,20 @@ def parse_args():
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--grad-accum", type=int, default=2)
     p.add_argument("--img-size", type=int, default=None)
+
+    # Fine-tuning regime
+    p.add_argument("--lr-pretrained", type=float, default=None,
+                   help="LR for the pretrained detector (transformer + heads).")
+    p.add_argument("--lr-schedule", type=str, default=None,
+                   choices=["cosine", "multistep"])
+    p.add_argument("--weight-decay", type=float, default=None)
+    p.add_argument("--no-ema", action="store_true",
+                   help="Disable weight EMA (selection then uses the raw model).")
+    p.add_argument("--ema-decay", type=float, default=None)
+    p.add_argument("--no-early-stop", action="store_true")
+    p.add_argument("--early-stop-patience", type=int, default=None)
+    p.add_argument("--eval-interval", type=int, default=None,
+                   help="Run validation every N epochs (default 1).")
 
     # KD / CRRCD
     p.add_argument("--distill", action="store_true")
@@ -654,6 +668,16 @@ if __name__ == "__main__":
         consistency_enabled=not args.no_consistency,
     )
     _maybe(cfg_kwargs, "img_size", args.img_size, int)
+    _maybe(cfg_kwargs, "lr_pretrained", args.lr_pretrained, float)
+    _maybe(cfg_kwargs, "lr_schedule", args.lr_schedule, str)
+    _maybe(cfg_kwargs, "weight_decay", args.weight_decay, float)
+    if args.no_ema:
+        cfg_kwargs["ema_enabled"] = False
+    _maybe(cfg_kwargs, "ema_decay", args.ema_decay, float)
+    if args.no_early_stop:
+        cfg_kwargs["early_stop_enabled"] = False
+    _maybe(cfg_kwargs, "early_stop_patience", args.early_stop_patience, int)
+    _maybe(cfg_kwargs, "eval_interval", args.eval_interval, int)
     _maybe(cfg_kwargs, "distill_num_general_queries", args.num_general_queries, int)
     _maybe(cfg_kwargs, "distill_teacher_ckpt", args.distill_teacher_ckpt, str)
     if args.crrcd:
