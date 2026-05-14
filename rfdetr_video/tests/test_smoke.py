@@ -598,6 +598,7 @@ def test_param_group_for_classifies_by_name():
     assert _param_group_for("bbox_embed.layers.0.weight") == "pretrained"
     assert _param_group_for("refpoint_embed.weight") == "pretrained"
     assert _param_group_for("query_feat.weight") == "pretrained"
+    assert _param_group_for("transformer.backbone_proj.weight") == "pretrained"
 
 
 @pytest.mark.skipif(not HEAVY, reason=HEAVY_REASON)
