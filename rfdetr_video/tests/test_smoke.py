@@ -709,3 +709,33 @@ def test_overfitting_sweep_script_valid_and_complete():
         ["bash", str(script)], capture_output=True, text=True, cwd=str(ROOT),
     )
     assert noarg.returncode != 0
+
+
+def test_warmup_then_cosine_compose():
+    from rfdetr_video.train import warmup_lr
+    cfg = Config(epochs=10, lr_schedule="cosine")
+    opt = _two_group_optimizer()
+    base_lrs = [pg["lr"] for pg in opt.param_groups]
+    sched = build_scheduler(opt, cfg)
+    warmup_iters = 50
+    steps_per_epoch = 20
+    # step 0: warmup pins both groups to ~0
+    warmup_lr(opt, 0, warmup_iters, base_lrs)
+    assert opt.param_groups[0]["lr"] == pytest.approx(0.0)
+    assert opt.param_groups[1]["lr"] == pytest.approx(0.0)
+    # mid-warmup: each group is the same fraction of its own base LR
+    warmup_lr(opt, 25, warmup_iters, base_lrs)
+    assert opt.param_groups[0]["lr"] == pytest.approx(base_lrs[0] * 0.5)
+    assert opt.param_groups[1]["lr"] == pytest.approx(base_lrs[1] * 0.5)
+    # simulate 3 epochs: warmup per step, scheduler per epoch
+    global_step = 0
+    for _epoch in range(3):
+        for _ in range(steps_per_epoch):
+            warmup_lr(opt, global_step, warmup_iters, base_lrs)
+            global_step += 1
+        sched.step()
+    lrs = [pg["lr"] for pg in opt.param_groups]
+    # post-warmup + a few cosine epochs: both groups decayed below base,
+    # and the differential ordering (group 0 > group 1) is preserved
+    assert lrs[0] < base_lrs[0] and lrs[1] < base_lrs[1]
+    assert lrs[0] > lrs[1]

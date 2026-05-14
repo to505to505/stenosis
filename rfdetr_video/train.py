@@ -510,8 +510,11 @@ def train(cfg: Config):
     with open(run_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
     save_train_csv(run_dir, history)
-    write_best_txt(run_dir, best_metrics, best_epoch, cfg)
-    print(f"[INFO] Best metrics saved to {run_dir / 'best.txt'}")
+    if best_metrics:
+        write_best_txt(run_dir, best_metrics, best_epoch, cfg)
+        print(f"[INFO] Best metrics saved to {run_dir / 'best.txt'}")
+    else:
+        print("[WARN] No evaluation ran (epochs < eval_interval?) — no best.pth/best.txt written")
 
     if cfg.wandb_enabled:
         import wandb
