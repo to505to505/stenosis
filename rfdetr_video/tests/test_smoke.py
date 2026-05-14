@@ -684,3 +684,20 @@ def test_eval_ablations_main_accepts_run_name():
     src = (ROOT / "_eval_stfs_ablations.py").read_text()
     assert "def main(run_name" in src
     assert "main(sys.argv[1]" in src
+
+
+def test_overfitting_sweep_script_valid_and_complete():
+    script = ROOT / "rfdetr_video" / "tools" / "overfitting_sweep.sh"
+    assert script.exists(), "overfitting_sweep.sh not created"
+    # bash syntax check
+    syntax = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert syntax.returncode == 0, syntax.stderr
+    # all six run names are handled
+    text = script.read_text()
+    for run in ("R0", "R1", "R2", "R3", "R4", "R5"):
+        assert run in text, f"sweep run {run} not handled"
+    # unknown run name exits non-zero
+    bad = subprocess.run(
+        ["bash", str(script), "RX"], capture_output=True, text=True, cwd=str(ROOT),
+    )
+    assert bad.returncode != 0
