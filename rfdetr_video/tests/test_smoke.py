@@ -20,6 +20,7 @@ import torch
 from rfdetr_video.config import Config, resolve_distill_frame_indices
 from rfdetr_video.consistency import num_consistency_loss
 from rfdetr_video.ema import ModelEMA
+from rfdetr_video.schedule import build_scheduler
 
 
 HEAVY = os.environ.get("RFDETR_VIDEO_HEAVY") == "1"
@@ -507,3 +508,42 @@ def test_model_ema_applied_to_restores_on_exception():
             raise RuntimeError("boom")
     for n, p in model.named_parameters():
         torch.testing.assert_close(p.detach(), original[n])
+
+
+def _two_group_optimizer():
+    import torch
+    p1 = torch.nn.Parameter(torch.zeros(2))
+    p2 = torch.nn.Parameter(torch.zeros(2))
+    return torch.optim.SGD([
+        {"params": [p1], "lr": 1e-4},
+        {"params": [p2], "lr": 3e-5},
+    ], lr=1e-4)
+
+
+def test_build_scheduler_cosine_decays_all_groups():
+    cfg = Config(epochs=10, lr_schedule="cosine")
+    opt = _two_group_optimizer()
+    sched = build_scheduler(opt, cfg)
+    start = [pg["lr"] for pg in opt.param_groups]
+    for _ in range(cfg.epochs):
+        sched.step()
+    end = [pg["lr"] for pg in opt.param_groups]
+    assert end[0] < start[0] and end[1] < start[1]
+    assert end[0] < 1e-5 and end[1] < 1e-5  # near eta_min
+
+
+def test_build_scheduler_multistep_passthrough():
+    cfg = Config(lr_schedule="multistep", lr_step_milestones=(2,), lr_gamma=0.1)
+    opt = _two_group_optimizer()
+    sched = build_scheduler(opt, cfg)
+    sched.step(); sched.step()  # hit milestone 2
+    lrs = [pg["lr"] for pg in opt.param_groups]
+    torch.testing.assert_close(lrs[0], 1e-5)   # 1e-4 * 0.1
+    torch.testing.assert_close(lrs[1], 3e-6)   # 3e-5 * 0.1
+
+
+def test_build_scheduler_rejects_unknown():
+    cfg = Config(lr_schedule="bogus")
+    opt = _two_group_optimizer()
+    with pytest.raises(ValueError, match="lr_schedule"):
+        build_scheduler(opt, cfg)
