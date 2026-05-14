@@ -26,6 +26,21 @@ HEAVY_REASON = "Set RFDETR_VIDEO_HEAVY=1 to run model-build smoke tests"
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_config_has_regime_fields():
+    cfg = Config()
+    assert cfg.epochs == 20
+    assert cfg.lr == 1e-4
+    assert cfg.lr_pretrained == 3e-5
+    assert cfg.lr_schedule == "cosine"
+    assert cfg.ema_enabled is True
+    assert cfg.ema_decay == 0.999
+    assert cfg.selection_smooth_k == 3
+    assert cfg.selection_weights == (0.5, 0.3, 0.2)
+    assert cfg.early_stop_enabled is True
+    assert cfg.early_stop_patience == 6
+    assert cfg.early_stop_min_delta == 0.0
+
+
 def test_no_unfold_in_codebase():
     pkg = ROOT / "rfdetr_video"
     out = subprocess.run(

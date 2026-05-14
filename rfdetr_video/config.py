@@ -32,16 +32,27 @@ class Config:
     pixel_std: tuple = (0.229, 0.224, 0.225)
 
     # Training
-    epochs: int = 50
+    epochs: int = 20
     batch_size: int = 2
     num_workers: int = 4
-    lr: float = 1e-4
-    lr_backbone: float = 1e-5
+    lr: float = 1e-4                 # LR for new modules (ETF / CRRCD)
+    lr_pretrained: float = 3e-5      # LR for pretrained detector (transformer + heads)
+    lr_backbone: float = 1e-5        # LR for backbone (unused while frozen)
+    lr_schedule: str = "cosine"      # "cosine" | "multistep"
     weight_decay: float = 1e-4
     warmup_iters: int = 500
-    lr_step_milestones: tuple = (30, 40)
+    lr_step_milestones: tuple = (30, 40)   # only used when lr_schedule == "multistep"
     lr_gamma: float = 0.1
     grad_accum_steps: int = 2
+
+    # EMA + checkpoint selection + early stopping
+    ema_enabled: bool = True
+    ema_decay: float = 0.999
+    selection_smooth_k: int = 3
+    selection_weights: tuple = (0.5, 0.3, 0.2)   # weights for (AP@0.3, AP@0.5, F1)
+    early_stop_enabled: bool = True
+    early_stop_patience: int = 6
+    early_stop_min_delta: float = 0.0
 
     # Logging
     wandb_project: str = "rfdetr-video"
