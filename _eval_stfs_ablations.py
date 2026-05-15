@@ -52,21 +52,9 @@ ABLATIONS = [
         "label": "Baseline (original config)",
         "overrides": {},
     },
-    {
-        "name": "test1_iou_gate_0",
-        "label": "Test 1: iou_gate=0.0 (disable IoU gate)",
-        "overrides": {"stfs_match_iou_thresh": 0.0},
-    },
-    {
-        "name": "test2_score_thresh_005",
-        "label": "Test 2: score_thresh=0.05 (lower seed threshold)",
-        "overrides": {"stfs_track_score_thresh": 0.05},
-    },
-    {
-        "name": "test3_l1_only_cost",
-        "label": "Test 3: iou_weight=0.0, l1_weight=7.0 (pure L1+cls cost)",
-        "overrides": {"stfs_iou_weight": 0.0, "stfs_l1_weight": 7.0},
-    },
+    # Note: test1/test2/test3 (stfs_* overrides) were dropped — they targeted
+    # the removed STFS module and produced identical Baseline numbers, just
+    # quadrupling eval time.
 ]
 
 
