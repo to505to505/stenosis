@@ -1,0 +1,10 @@
+PSSTT Evaluation – psstt_20ep
+Run dir: /home/dsa/stenosis/psstt/runs/psstt_20ep
+
+================================================================================
+DATASET: dataset2_split_test
+================================================================================
+  Dataset : dataset2_split_test  (31 videos, 1128 centre frames)
+
+  MACRO (mean/video)  AP30=0.3699  AP50=0.1966  AP75=0.0138  AP5095=0.0624  F1=0.2502  Frag=2.23  FragRate=0.0489
+  MICRO (pooled)      AP30=0.2708  AP50=0.0987  AP75=0.0047  AP5095=0.0267  F1=0.1882  P=0.2177  R=0.1658  thr=0.8100  Frag=69  FragRate=0.0612

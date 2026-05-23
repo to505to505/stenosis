@@ -110,6 +110,29 @@ class Config:
     etf_dropout: float = 0.0
     etf_spatial_radius: int = 0
 
+    # Adaptation mode: governs which temporal module is trainable.
+    # "full"    — current behavior (backbone optionally frozen, decoder/ETF
+    #             trainable, KD/CRRCD/consistency available).
+    # "postnet" — Post-Network Tuning. Backbone + decoder + heads frozen,
+    #             ETF disabled, KD/CRRCD/consistency disabled. Only the
+    #             TemporalPostNet on top of decoder hidden states is trained.
+    # "prompt"  — Prompt Tuning. Backbone + decoder + heads frozen, ETF
+    #             disabled, KD/CRRCD/consistency disabled. Only the
+    #             learnable prompt bank is trained.
+    adapt_mode: str = "full"
+
+    # Post-Network Tuning (late temporal modeling)
+    postnet_enabled: bool = False
+    postnet_heads: int = 8
+    postnet_layers: int = 1
+    postnet_dropout: float = 0.0
+
+    # Prompt Tuning (frame-propagated learnable prompts)
+    prompt_enabled: bool = False
+    prompt_num_prompts: int = 16
+    prompt_init_std: float = 0.02
+    prompt_propagate: str = "gru"   # currently only "gru" is implemented
+
     # Temporal Dropout (train-only frame masking)
     temporal_dropout_enabled: bool = False
     temporal_dropout_prob: float = 0.25
@@ -124,6 +147,41 @@ class Config:
     dynamic_batch_resize_max_size: int = 800
     dynamic_batch_resize_step: int = 32
     dynamic_batch_resize_p: float = 1.0
+
+
+_VALID_ADAPT_MODES = ("full", "postnet", "prompt")
+
+
+def apply_adapt_mode(cfg: "Config") -> "Config":
+    """Force config flags into a consistent state for the chosen adapt mode.
+
+    Called from the train entry point after CLI parsing. Mutates ``cfg``
+    in place and returns it for chaining. ``adapt_mode="full"`` is a
+    no-op so the existing config surface is untouched.
+    """
+    mode = str(cfg.adapt_mode)
+    if mode not in _VALID_ADAPT_MODES:
+        raise ValueError(
+            f"adapt_mode must be one of {_VALID_ADAPT_MODES}, got {mode!r}",
+        )
+    if mode == "full":
+        return cfg
+    if mode == "postnet":
+        cfg.postnet_enabled = True
+        cfg.prompt_enabled = False
+    else:  # "prompt"
+        cfg.prompt_enabled = True
+        cfg.postnet_enabled = False
+    # Frozen everything else: detector backbone, decoder/heads, ETF.
+    cfg.freeze_backbone = True
+    cfg.freeze_decoder = True
+    cfg.etf_enabled = False
+    # The alternatives are clean baselines — KD/CRRCD/consistency are off.
+    cfg.distill_enabled = False
+    cfg.distill_general_enabled = False
+    cfg.crrcd_enabled = False
+    cfg.consistency_enabled = False
+    return cfg
 
 
 def resolve_distill_frame_indices(

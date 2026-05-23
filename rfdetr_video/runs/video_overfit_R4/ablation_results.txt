@@ -1,0 +1,30 @@
+STFS Ablation Tests – video_overfit_R4
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/video_overfit_R4
+
+================================================================================
+ABLATION: Baseline (original config)
+overrides: (none)
+================================================================================
+  Dataset : cadica_50plus_new  (160 videos, 1614 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5221  AP50=0.2717  AP75=0.0184  AP5095=0.0732  F1=0.3283  Frag=0.43  FragRate=0.0249
+  MICRO (pooled)      AP30=0.3989  AP50=0.1124  AP75=0.0009  AP5095=0.0223  F1=0.2398  P=0.3225  R=0.1909  thr=0.4900  Frag=69  FragRate=0.0302
+  Dataset : dataset2_split_test  (31 videos, 1128 centre frames)
+  Ablation: Baseline (original config)
+
+  MACRO (mean/video)  AP30=0.5882  AP50=0.3487  AP75=0.0241  AP5095=0.1047  F1=0.3926  Frag=2.29  FragRate=0.0569
+  MICRO (pooled)      AP30=0.5788  AP50=0.2618  AP75=0.0090  AP5095=0.0719  F1=0.3597  P=0.4541  R=0.2979  thr=0.5500  Frag=71  FragRate=0.0629
+====================================================================================================
+COMPARISON TABLE  (MICRO pooled metrics)
+====================================================================================================
+
+Dataset: cadica_50plus_new
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.3989  0.1124  0.0009  0.2398  0.3225  0.1909     69   0.0302
+
+Dataset: dataset2_split_test
+  Ablation                                      AP30    AP50    AP75      F1       P       R   Frag   FragRt
+  ----------------------------------------------------------------------------------------------------------
+  Baseline (original config)                  0.5788  0.2618  0.0090  0.3597  0.4541  0.2979     71   0.0629

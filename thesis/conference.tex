@@ -1,0 +1,325 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage[nocompress]{cite}
+\renewcommand{\citepunct}{][}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{TempoRF-DETR: Video-Based Coronary Stenosis Detection with Image-to-Video Distillation\\
+\thanks{This thesis was prepared in partial fulfilment of the requirements for the Degree of Bachelor of Science in Data Science and Artificial Intelligence, Maastricht University. Supervisor(s): [name of your supervisor(s)]}
+}
+
+\author{\IEEEauthorblockN{Given Name Surname}
+\IEEEauthorblockA{\textit{Department of Advanced Computing Sciences} \\
+\textit{Faculty of Science and Engineering}\\
+\textit{Maastricht University}\\
+Maastricht, The Netherlands}
+}
+
+\maketitle
+
+\begin{abstract}
+This document is a model and instructions for \LaTeX.
+This and the IEEEtran.cls file define the components of your paper [title, text, heads, etc.]. *CRITICAL: Do Not Use Symbols, Special Characters, Footnotes, 
+or Math in Paper Title or Abstract.
+\end{abstract}
+
+\begin{IEEEkeywords}
+component, formatting, style, styling, insert
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Coronary artery disease (CAD) is one of the leading causes of mortality worldwide, driven by the build-up of atherosclerotic plaque that narrows (stenoses) the coronary arteries~\cite{popov2022reviewmodernapproachescoronary}. X-ray coronary angiography (XCA) is the clinical gold standard for assessing stenosis severity, but its interpretation is largely manual and exhibits substantial inter- and intra-observer variability~\cite{zir1976interobserver, cardiovascular}, which directly affects subsequent treatment decisions. Automated stenosis detection in XCA is therefore of considerable clinical value, yet it remains challenging: due to fluoroscopic projection, vessels overlap and move with respiratory and cardiac motion. There is consequently a clear need for accurate and robust automated stenosis detection models.
+
+Deep learning has shown considerable promise in this task. Early methods focused on single images or key frames, because frame-level annotation is simpler and image-based detection pipelines are easier to train and deploy. Representative examples include weakly supervised key-frame classification and heatmap localization~\cite{MOON2021105819}, real-time object detectors operating on raw angiograms~\cite{Danilov2021, attentionstenosis, kupeli2025yolo}, and end-to-end single-frame pipelines that combine lesion detection with segmentation and quantification~\cite{aipoweredrealtime, choudhary2026odysseiopensourceendtoendframework}. However, single-frame models make their decision from only one snapshot, even though angiography is acquired as a dynamic sequence: when overlap, poor contrast, or incomplete opacification appear in an individual frame, useful evidence is often present in adjacent frames. Recent work has therefore shifted toward video-based stenosis detection, where temporal aggregation consistently improves robustness and yields higher detection quality than frame-by-frame inference~\cite{fvcm, PANG2021101900, HAN2023106546, STQD-Det, li2025ltyolo}. From an accuracy standpoint, a video-based model is the natural target architecture for a clinically useful detector.
+
+Building such a model in the medical imaging domain, however, runs into two well-known obstacles. First, labeled medical data is expensive and scarce: pixel- or box-level annotation on angiograms has to be performed by trained cardiologists, which limits the size of any individual dataset~\cite{huang2026vasomim}. Second, models suffer from domain shift: a detector trained on data from one institution or one type of X-ray system tends to lose substantial quality on data acquired from a different vendor or center, even when the underlying clinical task is identical~\cite{cardiovascular, popov2022reviewmodernapproachescoronary}. A natural way to attack both problems at once is to train on several datasets simultaneously. This both increases the effective amount of supervision and, more importantly, forces the model to extract features that are common across acquisition setups rather than features tied to one particular scanner - encouraging cross-domain generalization. This effect has been empirically demonstrated in adjacent medical imaging modalities: pooled multi-site training improves segmentation accuracy on heterogeneous prostate MRI compared to any single-site baseline~\cite{liu2020msnet}, and balanced multi-source sampling improves out-of-distribution generalization of chest X-ray pathology classifiers across ten datasets~\cite{tetteh2021multidomain}. In short, multi-dataset training is an attractive route toward both data efficiency and robustness against domain shift.
+
+Several public XCA resources are now available, and a defining feature of this landscape is that they come in two different modalities: some datasets are released as collections of individual angiography \emph{images}, while others are released as full \emph{video sequences}. As representative examples on either side of this split, ARCADE~\cite{popov2024arcade} provides region-annotated single-frame images, whereas Danilov et al.~\cite{Danilov2021} released angiographic video series from one hundred patients acquired at the Research Institute for Complex Problems of Cardiovascular Diseases. Combining datasets across these two modalities is exactly what we want - it expands both the volume and the diversity of training data - but it is also what makes the problem non-trivial: a video-based detector cannot consume a static frame in the same way as a temporal sequence. Solving this \emph{image-to-video data bridging} problem~\cite{li2025imagetovideo} - how to use 2D single-frame datasets when training a model whose target input is a video - is therefore central to our approach, on the same level as the design of the video detector itself.
+
+The goal of this work is therefore twofold, and the two contributions are designed in symbiosis. First, we propose \mbox{TempoRF-DETR}, an accurate and efficient video-based stenosis detector for XCA: a temporally-aware extension of RF-DETR that exchanges context across all frames of a clip in a single forward pass via an Early Temporal Fusion (ETF) module. Second, and equally central, we introduce an \emph{image-to-video distillation} scheme to train \mbox{TempoRF-DETR} jointly on single-frame and video datasets, addressing labeled-data scarcity and cross-dataset domain shift. The intuition: video datasets can be decomposed into frames, so a 2D RF-DETR \emph{teacher} can be trained on every available frame - single-frame datasets plus frames extracted from videos - and learns richer per-frame features than the video \emph{student}, which only sees the smaller pool of temporally-annotated video. We therefore freeze the teacher and distill its per-frame knowledge into the student, leaving it free to learn temporal aggregation on top - letting single-frame datasets indirectly shape the video model even though they contain no video at all.
+\section{Related Work}
+
+\textbf{Single-frame stenosis detection.} The dominant recipe in modern single-frame stenosis detection is to take a strong general-purpose object detector and apply it directly to raw angiograms. Essentially every major detector family has been instantiated this way. Two-stage detectors (Faster R-CNN, RFCN with different backbones) were benchmarked at real-time rates by Danilov et al.~\cite{Danilov2021}, who identified RFCN ResNet-101 V2 as the best speed--accuracy trade-off. Single-stage detectors are represented by EfficientDet, RetinaNet, and attention-augmented Faster R-CNN variants in Van Stralen et al.~\cite{attentionstenosis}, and by the YOLO family (v5/v7/v8) in K\"upeli et al.~\cite{kupeli2025yolo}. Beyond pure detection, several works pair a detector with a segmentation branch for quantitative coronary analysis (QCA): Tang et al.~\cite{aipoweredrealtime} combine SegFormer with an R-CNN lesion detector, and Choudhary et al.~\cite{choudhary2026odysseiopensourceendtoendframework} integrate YOLO11m with DeepLabv3+ in their ODySSeI framework, adding a QCA-free severity estimation step. The common thread is that single-frame stenosis detection has effectively become a problem of \emph{choosing} and \emph{adapting} a powerful general-purpose detector for angiograms; the architectures themselves are not specific to medical imaging. All such methods, however, are fundamentally limited to a single snapshot and cannot exploit temporal context.
+
+\textbf{Video-based stenosis detection.} A clear pattern runs through nearly all video-based stenosis detectors: they take a strong 2D image-level detector as the per-frame backbone and bolt on a \emph{temporal aggregation module} that shares information across consecutive frames. Cong et al.~\cite{fvcm} pair an Inception-v3 per-frame backbone with CNN+LSTM keyframe selection and an anchor-based FPN for localization, but struggle with small branch lesions. Pang et al.~\cite{PANG2021101900} use ResNet-50 + FPN as the per-frame backbone and add Sequence Feature Fusion and Sequence Consistency Alignment modules over 9-frame sequences; the alignment module is sensitive to vessel motion amplitude. Han et al.~\cite{HAN2023106546} keep the same ResNet-50 + FPN backbone and replace the temporal aggregator with a proposal-shifted Transformer that aligns vessel positions across time, at a substantial computational cost. Li et al.~\cite{STQD-Det} (STQD-Det) again build on ResNet-50 + FPN and add a Spatio-Temporal Feature Sharing module that Hungarian-matches detections across frames and projects features from confident frames onto ambiguous ones, with the box head reformulated as a quantum diffusion process. Li et al.~\cite{li2025ltyolo} (LT-YOLO) inherit a YOLOv8 backbone enhanced with a dynamic Transformer block and add a Mamba-based bidirectional spatial-temporal fusion neck for long-term temporal mining, additionally producing categorical severity grading. The template is consistent across the field: the 2D backbone determines the per-frame feature quality, and the innovation happens in the temporal module on top---which is exactly the template TempoRF-DETR follows, reusing the powerful 2D RF-DETR detector as the per-frame backbone and adding our Early Temporal Fusion (ETF) module as the temporal aggregator. Two data-level limitations remain open across these works: most are validated on a single institution or vendor, leaving cross-dataset robustness underexplored~\cite{cardiovascular}, and public XCA resources are split between single-frame and video datasets~\cite{jimenezpartinen2024cadica, popov2024arcade}, with most labeled data concentrated on the single-frame side---which is precisely the regime our image-to-video distillation scheme targets. Table~\ref{tab:summary} summarizes the reviewed methods.
+
+\begin{table*}[!t]
+\centering
+\caption{Summary of reviewed single-frame and video-based stenosis detection methods.}
+\label{tab:summary}
+\footnotesize
+\begin{tabular}{p{3.5cm} p{2.2cm} p{3.4cm} p{2.0cm} p{3.0cm}}
+\hline
+\textbf{Study} & \textbf{Task} & \textbf{Architecture} & \textbf{Input} & \textbf{Key Result} \\
+\hline
+Stralen et al.~\cite{attentionstenosis} & Detection & EfficientDet (D3) & Single frame & mAP 0.67 \\
+Danilov et al.~\cite{Danilov2021} & Detection & RFCN/Faster R-CNN & Single frame & mAP 0.94, 10 fps \\
+K\"upeli et al.~\cite{kupeli2025yolo} & Detection & YOLOv5/v7/v8 & Single frame & 8.3K-image benchmark \\
+Tang et al.~\cite{aipoweredrealtime} & Det.+Seg.+QCA & SegFormer + R-CNN & Keyframes & End-to-end pipeline \\
+Choudhary et al.~\cite{choudhary2026odysseiopensourceendtoendframework} & Det.+Seg.+QCA & YOLO11m + DeepLabv3+ & Single frame & Open-source, QCA-free \\
+Cong et al.~\cite{fvcm} & Class.+Det. & CNN+LSTM + FPN & Video & AUC 0.86 (patient) \\
+Pang et al.~\cite{PANG2021101900} & Detection & ResNet-50 + FPN & 9-frame seq. & F1 88.1\% \\
+Han et al.~\cite{HAN2023106546} & Detection & ResNet-50+FPN+Trans. & 9-frame seq. & F1 79.11 \\
+Li et al.~\cite{STQD-Det} & Detection & ResNet-50+FPN+QDM & 9-frame seq. & STFS module \\
+Li et al.~\cite{li2025ltyolo} & Det.+Severity & LT-YOLO (Mamba) & Video seq. & mAP@0.5 76.4\% \\
+\hline
+\end{tabular}
+\end{table*}
+
+\section{Ease of Use}
+
+\subsection{Maintaining the Integrity of the Specifications}
+
+The IEEEtran class file is used to format your paper and style the text. All margins, 
+column widths, line spaces, and text fonts are prescribed; please do not 
+alter them. You may note peculiarities. For example, the head margin
+measures proportionately more than is customary. This measurement 
+and others are deliberate, using specifications that anticipate your paper 
+as one part of the entire proceedings, and not as an independent document. 
+Please do not revise any of the current designations.
+
+\section{Prepare Your Paper Before Styling}
+Before you begin to format your paper, first write and save the content as a 
+separate text file. Complete all content and organizational editing before 
+formatting. Please note sections \ref{AA}--\ref{SCM} below for more information on 
+proofreading, spelling and grammar.
+
+Keep your text and graphic files separate until after the text has been 
+formatted and styled. Do not number text heads - {\LaTeX} will do that 
+for you.
+
+\subsection{Abbreviations and Acronyms}\label{AA}
+Define abbreviations and acronyms the first time they are used in the text, 
+even after they have been defined in the abstract. Abbreviations such as 
+IEEE, SI, MKS, CGS, ac, dc, and rms do not have to be defined. Do not use 
+abbreviations in the title or heads unless they are unavoidable.
+
+\subsection{Units}
+\begin{itemize}
+\item Use either SI (MKS) or CGS as primary units. (SI units are encouraged.) English units may be used as secondary units (in parentheses). An exception would be the use of English units as identifiers in trade, such as ``3.5-inch disk drive''.
+\item Avoid combining SI and CGS units, such as current in amperes and magnetic field in oersteds. This often leads to confusion because equations do not balance dimensionally. If you must use mixed units, clearly state the units for each quantity that you use in an equation.
+\item Do not mix complete spellings and abbreviations of units: ``Wb/m\textsuperscript{2}'' or ``webers per square meter'', not ``webers/m\textsuperscript{2}''. Spell out units when they appear in text: ``. . . a few henries'', not ``. . . a few H''.
+\item Use a zero before decimal points: ``0.25'', not ``.25''. Use ``cm\textsuperscript{3}'', not ``cc''.)
+\end{itemize}
+
+\subsection{Equations}
+Number equations consecutively. To make your 
+equations more compact, you may use the solidus (~/~), the exp function, or 
+appropriate exponents. Italicize Roman symbols for quantities and variables, 
+but not Greek symbols. Use a long dash rather than a hyphen for a minus 
+sign. Punctuate equations with commas or periods when they are part of a 
+sentence, as in:
+\begin{equation}
+a+b=\gamma\label{eq}
+\end{equation}
+
+Be sure that the 
+symbols in your equation have been defined before or immediately following 
+the equation. Use ``\eqref{eq}'', not ``Eq.~\eqref{eq}'' or ``equation \eqref{eq}'', except at 
+the beginning of a sentence: ``Equation \eqref{eq} is . . .''
+
+\subsection{\LaTeX-Specific Advice}
+
+Please use ``soft'' (e.g., \verb|\eqref{Eq}|) cross references instead
+of ``hard'' references (e.g., \verb|(1)|). That will make it possible
+to combine sections, add equations, or change the order of figures or
+citations without having to go through the file line by line.
+
+Please don't use the \verb|{eqnarray}| equation environment. Use
+\verb|{align}| or \verb|{IEEEeqnarray}| instead. The \verb|{eqnarray}|
+environment leaves unsightly spaces around relation symbols.
+
+Please note that the \verb|{subequations}| environment in {\LaTeX}
+will increment the main equation counter even when there are no
+equation numbers displayed. If you forget that, you might write an
+article in which the equation numbers skip from (17) to (20), causing
+the copy editors to wonder if you've discovered a new method of
+counting.
+
+{\BibTeX} does not work by magic. It doesn't get the bibliographic
+data from thin air but from .bib files. If you use {\BibTeX} to produce a
+bibliography you must send the .bib files. 
+
+{\LaTeX} can't read your mind. If you assign the same label to a
+subsubsection and a table, you might find that Table I has been cross
+referenced as Table IV-B3. 
+
+{\LaTeX} does not have precognitive abilities. If you put a
+\verb|\label| command before the command that updates the counter it's
+supposed to be using, the label will pick up the last counter to be
+cross referenced instead. In particular, a \verb|\label| command
+should not go before the caption of a figure or a table.
+
+Do not use \verb|\nonumber| inside the \verb|{array}| environment. It
+will not stop equation numbers inside \verb|{array}| (there won't be
+any anyway) and it might stop a wanted equation number in the
+surrounding equation.
+
+\subsection{Some Common Mistakes}\label{SCM}
+\begin{itemize}
+\item The word ``data'' is plural, not singular.
+\item The subscript for the permeability of vacuum $\mu_{0}$, and other common scientific constants, is zero with subscript formatting, not a lowercase letter ``o''.
+\item In American English, commas, semicolons, periods, question and exclamation marks are located within quotation marks only when a complete thought or name is cited, such as a title or full quotation. When quotation marks are used, instead of a bold or italic typeface, to highlight a word or phrase, punctuation should appear outside of the quotation marks. A parenthetical phrase or statement at the end of a sentence is punctuated outside of the closing parenthesis (like this). (A parenthetical sentence is punctuated within the parentheses.)
+\item A graph within a graph is an ``inset'', not an ``insert''. The word alternatively is preferred to the word ``alternately'' (unless you really mean something that alternates).
+\item Do not use the word ``essentially'' to mean ``approximately'' or ``effectively''.
+\item In your paper title, if the words ``that uses'' can accurately replace the word ``using'', capitalize the ``u''; if not, keep using lower-cased.
+\item Be aware of the different meanings of the homophones ``affect'' and ``effect'', ``complement'' and ``compliment'', ``discreet'' and ``discrete'', ``principal'' and ``principle''.
+\item Do not confuse ``imply'' and ``infer''.
+\item The prefix ``non'' is not a word; it should be joined to the word it modifies, usually without a hyphen.
+\item There is no period after the ``et'' in the Latin abbreviation ``et al.''.
+\item The abbreviation ``i.e.'' means ``that is'', and the abbreviation ``e.g.'' means ``for example''.
+\end{itemize}
+An excellent style manual for science writers is \cite{b7}.
+
+\subsection{Authors and Affiliations}
+\textbf{The class file is designed for, but not limited to, six authors.} A 
+minimum of one author is required for all conference articles. Author names 
+should be listed starting from left to right and then moving down to the 
+next line. This is the author sequence that will be used in future citations 
+and by indexing services. Names should not be listed in columns nor group by 
+affiliation. Please keep your affiliations as succinct as possible (for 
+example, do not differentiate among departments of the same organization).
+
+\subsection{Identify the Headings}
+Headings, or heads, are organizational devices that guide the reader through 
+your paper. There are two types: component heads and text heads.
+
+Component heads identify the different components of your paper and are not 
+topically subordinate to each other. Examples include Acknowledgments and 
+References and, for these, the correct style to use is ``Heading 5''. Use 
+``figure caption'' for your Figure captions, and ``table head'' for your 
+table title. Run-in heads, such as ``Abstract'', will require you to apply a 
+style (in this case, italic) in addition to the style provided by the drop 
+down menu to differentiate the head from the text.
+
+Text heads organize the topics on a relational, hierarchical basis. For 
+example, the paper title is the primary text head because all subsequent 
+material relates and elaborates on this one topic. If there are two or more 
+sub-topics, the next level head (uppercase Roman numerals) should be used 
+and, conversely, if there are not at least two sub-topics, then no subheads 
+should be introduced.
+
+\subsection{Figures and Tables}
+\paragraph{Positioning Figures and Tables} Place figures and tables at the top and 
+bottom of columns. Avoid placing them in the middle of columns. Large 
+figures and tables may span across both columns. Figure captions should be 
+below the figures; table heads should appear above the tables. Insert 
+figures and tables after they are cited in the text. Use the abbreviation 
+``Fig.~\ref{fig}'', even at the beginning of a sentence.
+
+\begin{table}[htbp]
+\caption{Table Type Styles}
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Table}&\multicolumn{3}{|c|}{\textbf{Table Column Head}} \\
+\cline{2-4} 
+\textbf{Head} & \textbf{\textit{Table column subhead}}& \textbf{\textit{Subhead}}& \textbf{\textit{Subhead}} \\
+\hline
+copy& More table copy$^{\mathrm{a}}$& &  \\
+\hline
+\multicolumn{4}{l}{$^{\mathrm{a}}$Sample of a Table footnote.}
+\end{tabular}
+\label{tab1}
+\end{center}
+\end{table}
+
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=0.49\textwidth]{UMlogo.jpg}}
+\caption{Example of a figure caption.}
+\label{fig}
+\end{figure}
+
+Figure Labels: Use 8 point Times New Roman for Figure labels. Use words 
+rather than symbols or abbreviations when writing Figure axis labels to 
+avoid confusing the reader. As an example, write the quantity 
+``Magnetization'', or ``Magnetization, M'', not just ``M''. If including 
+units in the label, present them within parentheses. Do not label axes only 
+with units. In the example, write ``Magnetization (A/m)'' or ``Magnetization 
+\{A[m(1)]\}'', not just ``A/m''. Do not label axes with a ratio of 
+quantities and units. For example, write ``Temperature (K)'', not 
+``Temperature/K''.
+
+\section*{Acknowledgment}
+
+The preferred spelling of the word ``acknowledgment'' in America is without 
+an ``e'' after the ``g''. Avoid the stilted expression ``one of us (R. B. 
+G.) thanks $\ldots$''. Instead, try ``R. B. G. thanks$\ldots$''. Put sponsor 
+acknowledgments in the unnumbered footnote on the first page.
+
+\section*{References}
+
+Please number citations consecutively within brackets \cite{b1}. The 
+sentence punctuation follows the bracket \cite{b2}. Refer simply to the reference 
+number, as in \cite{b3} - do not use ``Ref. \cite{b3}'' or ``reference \cite{b3}'' except at 
+the beginning of a sentence: ``Reference \cite{b3} was the first $\ldots$''
+
+Number footnotes separately in superscripts. Place the actual footnote at 
+the bottom of the column in which it was cited. Do not put footnotes in the 
+abstract or reference list. Use letters for table footnotes.
+
+Unless there are six authors or more give all authors' names; do not use 
+``et al.''. Papers that have not been published, even if they have been 
+submitted for publication, should be cited as ``unpublished'' \cite{b4}. Papers 
+that have been accepted for publication should be cited as ``in press'' \cite{b5}. 
+Capitalize only the first word in a paper title, except for proper nouns and 
+element symbols.
+
+For papers published in translation journals, please give the English 
+citation first, followed by the original foreign-language citation \cite{b6}.
+
+\begin{thebibliography}{00}
+\bibitem{popov2022reviewmodernapproachescoronary} M. Popov, T. Aimyshev, E. Ismailov, A. Bulegenov, and S. Fazli, ``A Review of Modern Approaches for Coronary Angiography Imaging Analysis,'' arXiv preprint arXiv:2209.13997, 2022.
+
+\bibitem{zir1976interobserver} L. M. Zir, S. W. Miller, R. E. Dinsmore, J. P. Gilbert, and J. W. Harthorne, ``Interobserver variability in coronary angiography,'' \textit{Circulation}, vol. 53, no. 4, pp. 627--632, 1976. doi: 10.1161/01.CIR.53.4.627
+
+\bibitem{cardiovascular} H. Ren, F. Jing, Y. Fang, and W. Cheng, ``Artificial intelligence techniques for cardiovascular disease diagnosis via X-ray sensor-based coronary angiography: A bibliometric and systematic review,'' \textit{DIGITAL HEALTH}, vol. 12, p. 20552076261417142, 2026. doi: 10.1177/20552076261417142
+
+\bibitem{MOON2021105819} J. H. Moon, D. Y. Lee, W. C. Cha, M. J. Chung, K.-S. Lee, B. H. Cho, and J. H. Choi, ``Automatic stenosis recognition from coronary angiography using convolutional neural networks,'' \textit{Computer Methods and Programs in Biomedicine}, vol. 198, p. 105819, 2021. doi: 10.1016/j.cmpb.2020.105819
+
+\bibitem{Danilov2021} V. V. Danilov, K. Y. Klyshnikov, O. M. Gerget, et al., ``Real-time coronary artery stenosis detection based on modern neural networks,'' \textit{Scientific Reports}, vol. 11, no. 1, p. 7582, Apr. 2021. doi: 10.1038/s41598-021-87174-2
+
+\bibitem{attentionstenosis} P. Van Stralen, D. L. Rodrigues, A. L. Oliveira, M. N. Menezes, and F. J. Pinto, ``Stenosis Detection in X-ray Coronary Angiography with Deep Neural Networks Leveraged by Attention Mechanisms,'' in \textit{Proc. 9th Int. Conf. Bioinformatics Research and Applications (ICBRA)}, 2023, pp. 123--128. doi: 10.1145/3569192.3569212
+
+\bibitem{kupeli2025yolo} H. K\"upeli, I. Kuru, K. K. \c{C}evik, and A. Bozkurt, ``Angiography-Based Detection of Coronary Artery Stenosis Using YOLO Algorithm,'' \textit{Traitement du Signal}, vol. 42, no. 3, pp. 1525--1539, 2025. doi: 10.18280/ts.420325
+
+\bibitem{aipoweredrealtime} K.-T. Tang, J.-Y. Shih, P. Hsu, C.-T. Liao, I.-M. Chiu, Z.-C. Chen, H.-L. Huang, L.-C. Yang, C. Liu, J. Wang, C.-H. Chang, J.-S. Huang, Y.-H. Hsu, M.-C. Tsai, N.-L. Chen, S.-H. Huang, K.-S. Chen, and W.-T. Chang, ``Artificial Intelligence Powered Real-Time Coronary Stenosis Recognition and Quantification in Angiography,'' \textit{Journal of Imaging Informatics in Medicine}, 2025. doi: 10.1007/s10278-025-01578-4
+
+\bibitem{choudhary2026odysseiopensourceendtoendframework} A. Choudhary, X. Sun, T. Mahendiran, O. Senouf, D. Auberson, B. De Bruyne, S. Fournier, O. Muller, E. Abbé, P. Frossard, and D. Thanou, ``ODySSeI: An Open-Source End-to-End Framework for Automated Detection, Segmentation, and Severity Estimation of Lesions in Invasive Coronary Angiography Images,'' arXiv preprint arXiv:2603.20021, 2026.
+
+\bibitem{fvcm} C. Cong, Y. Kato, H. D. De Vasconcellos, M. R. Ostovaneh, J. A. C. Lima, and B. Ambale-Venkatesh, ``Deep learning-based end-to-end automated stenosis classification and localization on catheter coronary angiography,'' \textit{Frontiers in Cardiovascular Medicine}, vol. 10, 2023. doi: 10.3389/fcvm.2023.944135
+
+\bibitem{PANG2021101900} K. Pang, D. Ai, H. Fang, J. Fan, H. Song, and J. Yang, ``Stenosis-DetNet: Sequence consistency-based stenosis detection for X-ray coronary angiography,'' \textit{Computerized Medical Imaging and Graphics}, vol. 89, p. 101900, 2021. doi: 10.1016/j.compmedimag.2021.101900
+
+\bibitem{HAN2023106546} T. Han, D. Ai, X. Li, J. Fan, H. Song, Y. Wang, and J. Yang, ``Coronary artery stenosis detection via proposal-shifted spatial-temporal transformer in X-ray angiography,'' \textit{Computers in Biology and Medicine}, vol. 153, p. 106546, 2023. doi: 10.1016/j.compbiomed.2023.106546
+
+\bibitem{STQD-Det} X. Li, D. Ai, H. Song, J. Fan, T. Fu, D. Xiao, Y. Wang, and J. Yang, ``STQD-Det: Spatio-Temporal Quantum Diffusion Model for Real-Time Coronary Stenosis Detection in X-Ray Angiography,'' \textit{IEEE Transactions on Pattern Analysis and Machine Intelligence}, vol. 46, no. 12, pp. 9908--9920, 2024. doi: 10.1109/TPAMI.2024.3430839
+
+\bibitem{li2025ltyolo} J. Li, X. Tang, and X. Wang, ``LT-YOLO: long-term temporal enhanced YOLO for stenosis detection on invasive coronary angiography,'' \textit{Frontiers in Molecular Biosciences}, vol. 12, p. 1558495, 2025. doi: 10.3389/fmolb.2025.1558495
+
+\bibitem{huang2026vasomim} D.-X. Huang, C. Yu, X.-H. Zhou, T.-Y. Xiang, Q.-Y. Zhang, M.-J. Gui, R.-Z. Ma, C.-Y. Wang, N.-F. Xiao, F. Wang, and Z.-G. Hou, ``Vascular Anatomy-aware Self-supervised Pre-training for X-ray Angiogram Analysis,'' arXiv preprint arXiv:2602.11536, 2026.
+
+\bibitem{liu2020msnet} Q. Liu, Q. Dou, L. Yu, and P. A. Heng, ``MS-Net: Multi-Site Network for Improving Prostate Segmentation With Heterogeneous MRI Data,'' \textit{IEEE Transactions on Medical Imaging}, vol. 39, no. 9, pp. 2713--2724, 2020. doi: 10.1109/TMI.2020.2974574
+
+\bibitem{tetteh2021multidomain} E. Tetteh, J. Viviano, Y. Bengio, D. Krueger, and J. P. Cohen, ``Multi-Domain Balanced Sampling Improves Out-of-Distribution Generalization of Chest X-ray Pathology Prediction Models,'' in \textit{Medical Imaging Meets NeurIPS Workshop (Med-NeurIPS)}, 2021. arXiv:2112.13734.
+
+\bibitem{popov2024arcade} M. Popov, A. Amanturdieva, N. Zhaksylyk, et al., ``Dataset for Automatic Region-based Coronary Artery Disease Diagnostics Using X-Ray Angiography Images,'' \textit{Scientific Data}, vol. 11, p. 20, 2024. doi: 10.1038/s41597-023-02871-z
+
+\bibitem{li2025imagetovideo} J. Li, C. Tan, H. Chen, J. Ma, J.-F. Hu, J. Lai, and W.-S. Zheng, ``Image to Video Transfer Learning,'' arXiv preprint arXiv:2510.10671, 2025.
+
+\bibitem{jimenezpartinen2024cadica} A. Jiménez-Partinen, M. A. Molina-Cabello, K. Thurnhofer-Hemsi, E. J. Palomo, J. Rodríguez-Capitán, A. I. Molina-Ramos, and M. Jiménez-Navarro, ``CADICA: a new dataset for coronary artery disease detection by using invasive coronary angiography,'' arXiv preprint arXiv:2402.00570, 2024.
+\end{thebibliography}
+\vspace{12pt}
+\color{red}
+IEEE conference templates contain guidance text for composing and formatting conference papers. Please ensure that all template text is removed from your version prior to submission to the relevant assignment. 
+
+\end{document}

@@ -1,0 +1,87 @@
+\documentclass{article}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{Deep Learning for Coronary Stenosis Detection in X-Ray Angiography}
+\author{Dmitrii Sakharov}
+\date{March 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction}
+
+Coronary artery disease (CAD) is one of the leading causes of mortality worldwide, driven by the build-up of atherosclerotic plaque that narrows (stenoses) the coronary arteries~\cite{popov2022reviewmodernapproachescoronary}. X-ray coronary angiography (XCA) is the clinical gold standard for assessing stenosis severity, but its interpretation is largely manual and exhibits substantial inter- and intra-observer variability, which directly affects subsequent treatment decisions~\cite{cardiovascular}. Automated stenosis detection in XCA is therefore of considerable clinical value, yet it remains challenging: due to fluoroscopic projection, vessels overlap and move with respiratory and cardiac motion. Therefore, there is a need for automated stenosis detection models.
+
+
+Deep learning has shown considerable promise in automating stenosis analysis, and the development of this field has followed a clear progression. Early methods focused on single images or key frames, because frame-level annotation is simpler and image-based detection pipelines are easier to train and deploy. Representative examples include weakly supervised key-frame classification and heatmap localization~\cite{MOON2021105819}, real-time object detectors operating on raw angiograms~\cite{Danilov2021, attentionstenosis}, and end-to-end single-frame pipelines that combine lesion detection with segmentation and quantification~\cite{aipoweredrealtime, choudhary2026odysseiopensourceendtoendframework}. However, single-frame models have an intrinsic limitation: they make decisions from only one snapshot, even though angiography is acquired as a dynamic sequence. When overlap, poor contrast, or incomplete opacification appear in an individual frame, useful evidence is often present in adjacent frames. For this reason, recent work has increasingly shifted toward video-based stenosis detection, where temporal aggregation improves robustness and usually yields better detection quality than frame-by-frame inference~\cite{fvcm, PANG2021101900, HAN2023106546, STQD-Det, li2025ltyolo}.
+
+At the same time, this shift toward video models exposes a data problem that remains unresolved. Public resources are gradually becoming available, including CADICA~\cite{jimenezpartinen2024cadica}, which provides ICA videos with associated metadata, and ARCADE~\cite{popov2024arcade}, which provides region-annotated angiography images. These datasets are valuable, but they differ substantially from one another: they vary in imaging equipment (which introduces domain shift between datasets), in annotation protocols, and in temporal coverage — some provide only single-frame annotations, while others contain fully annotated video sequences. This heterogeneity creates a central research gap: although video-based models are increasingly attractive, it remains unclear how to effectively combine abundant single-frame datasets with smaller temporally annotated video datasets for training such models. This challenge is further compounded by broader limitations highlighted in recent surveys, including limited external validation and poor generalizability across imaging systems~\cite{popov2022reviewmodernapproachescoronary, cardiovascular}.
+
+The goal of this work is to develop an effective algorithm for automated stenosis detection in XCA. To this end, we review state-of-the-art single-frame and video-based stenosis detection methods, identify the remaining research gaps, and design experiments that motivate and guide a video-based approach addressing them.
+
+\section{Related Work}
+
+	extbf{Single-frame stenosis detection.} The first wave of deep learning methods for coronary stenosis detection focused on single images or key frames. Early approaches analyzed lesions on top of vessel segmentation results~\cite{ZHAO2021104667, menezes2023, molenar}, e.g., by extracting the centerline and locating local minima of the estimated vessel radius, but these pipelines accumulated errors across stages and depended heavily on segmentation quality. The field then shifted toward direct image-based detection on raw angiograms. Moon et al.~\cite{MOON2021105819} combined automated keyframe selection with an Inception-v3 + CBAM classifier and Grad-CAM-based localization, achieving strong classification accuracy but only heatmap-level spatial output. Stralen et al.~\cite{attentionstenosis} compared attention-based detectors (EfficientDet, RetinaNet, Faster R-CNN) on the RCA, finding EfficientDet with BiFPN to perform best but with a high false positive rate. Danilov et al.~\cite{Danilov2021} benchmarked eight detection architectures for real-time cath-lab use, identifying RFCN ResNet-101 V2 as the best speed--accuracy trade-off, though limited to single-vessel disease. More recent end-to-end frameworks couple detection with segmentation to enable quantitative coronary analysis (QCA): Tang et al.~\cite{aipoweredrealtime} combined SegFormer segmentation with an R-CNN lesion detector, while Choudhary et al.~\cite{choudhary2026odysseiopensourceendtoendframework} proposed ODySSeI, integrating YOLO11m and DeepLabv3+ with a QCA-free severity estimation step. To address label scarcity, Huang et al.~\cite{huang2026vasomim} introduced VasoMIM, an anatomy-aware masked image modeling framework that surpasses fully supervised baselines with only a fraction of labels, but still operates on single frames. Despite strong progress, single-frame methods remain fundamentally limited by the lack of temporal context: ambiguous frames with overlap, low contrast, or poor opacification still produce false positives and false negatives that neighboring frames could help resolve.
+
+	extbf{Video-based stenosis detection.} Because angiography is inherently sequential, the next step was to move from frame-level detection to video-based models that can aggregate evidence across time. Cong et al.~\cite{fvcm} built an end-to-end pipeline with CNN+LSTM keyframe selection, Inception-v3 classification, and FPN localization, but struggled with small branch lesions. Pang et al.~\cite{PANG2021101900} introduced Stenosis-DetNet, processing 9-frame sequences with Sequence Feature Fusion and Sequence Consistency Alignment modules, demonstrating substantial improvements over single-frame baselines, though the alignment module is sensitive to vessel motion amplitude. Han et al.~\cite{HAN2023106546} proposed PS-STT, the first work to integrate a Transformer for stenosis detection, using a proposal-shifted mechanism to align vessel positions across time; however, the Transformer and RPN-based anchor adjustment incur high computational cost. Li et al.~\cite{STQD-Det} presented STQD-Det, a quantum diffusion model with a Spatio-Temporal Feature Sharing module that projects features from confident frames onto problematic ones via Hungarian matching, treating stenosis detection as a noise-to-box denoising process. Li et al.~\cite{li2025ltyolo} proposed LT-YOLO, a YOLOv8-based detector with a dynamic Transformer backbone and a Mamba-based bidirectional spatial-temporal fusion neck for long-term temporal mining, additionally providing categorical severity grading. Overall, these studies show that video-based modeling can substantially improve detection quality over single-frame baselines. However, this progress creates a new bottleneck at the data level. Publicly available resources are split across different modalities and annotation regimes: some datasets provide video sequences with study-level metadata, whereas others provide isolated frames with lesion annotations~\cite{jimenezpartinen2024cadica, popov2024arcade}. Since temporally annotated videos are much harder to collect than single frames, an important unresolved question is how to effectively transfer or combine information from frame-based datasets when training video models. In addition, most video-based studies still rely on internal evaluation from a single institution or vendor, leaving domain shift and external robustness insufficiently explored~\cite{cardiovascular}. Table~\ref{tab:summary} summarizes the reviewed methods.
+
+\begin{table}[ht]
+\centering
+\caption{Summary of reviewed single-frame and video-based stenosis detection methods.}
+\label{tab:summary}
+\footnotesize
+\begin{tabular}{p{3.2cm} p{2.0cm} p{2.8cm} p{1.8cm} p{2.5cm}}
+\hline
+\textbf{Study} & \textbf{Task} & \textbf{Architecture} & \textbf{Input} & \textbf{Key Result} \\
+\hline
+Moon et al.~\cite{MOON2021105819} & Class.+Loc. & Inception-v3+CBAM & Single frame & Grad-CAM heatmaps \\
+Stralen et al.~\cite{attentionstenosis} & Detection & EfficientDet (D3) & Single frame & mAP 0.67 \\
+Danilov et al.~\cite{Danilov2021} & Detection & RFCN/Faster R-CNN & Single frame & mAP 0.94, 10 fps \\
+Tang et al.~\cite{aipoweredrealtime} & Det.+Seg.+QCA & SegFormer + R-CNN & Keyframes & End-to-end pipeline \\
+Choudhary et al.~\cite{choudhary2026odysseiopensourceendtoendframework} & Det.+Seg.+QCA & YOLO11m + DeepLabv3+ & Single frame & Open-source, QCA-free \\
+Huang et al.~\cite{huang2026vasomim} & Seg.+Det. & VasoMIM (ViT) & Single frame & SOTA w/ 10\% labels \\
+Cong et al.~\cite{fvcm} & Class.+Det. & CNN+LSTM + FPN & Video & AUC 0.86 (patient) \\
+Pang et al.~\cite{PANG2021101900} & Detection & ResNet-50 + FPN & 9-frame seq. & F1 88.1\% \\
+Han et al.~\cite{HAN2023106546} & Detection & ResNet-50+FPN+Trans. & 9-frame seq. & F1 79.11 \\
+Li et al.~\cite{STQD-Det} & Detection & ResNet-50+FPN+QDM & 9-frame seq. & STFS module \\
+Li et al.~\cite{li2025ltyolo} & Det.+Severity & LT-YOLO (Mamba) & Video seq. & mAP@0.5 76.4\% \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Methods and Experiments}
+
+Guided by the research gaps identified above, we design a series of experiments that progress from single-frame baselines to temporal models and address data bridging, domain shift, and detection stability.
+
+\subsection{Self-Supervised Pre-Training}
+
+Following the VasoMIM framework~\cite{huang2026vasomim}, we pre-trained a ViT backbone on approximately 180K unlabeled angiogram frames using masked image modeling. We then compared detection performance with and without this pre-trained initialization to quantify the benefit of self-supervised pre-training for stenosis detection.
+
+\subsection{Single-Frame Detection Baselines}
+
+We benchmarked several modern single-frame detectors-YOLOv9, YOLO11, and RF-DETR-on our primary dataset to establish baseline performance and identify the strongest single-frame architecture for subsequent temporal extension.
+
+\subsection{Video-Based Detection}
+
+To exploit temporal information, we implemented two existing video-based approaches from the literature: STQD-Det~\cite{STQD-Det} and PS-STT~\cite{HAN2023106546} (Temporal Transformer with proposal-shifted aggregation). In addition, we extended our best-performing single-frame model, RF-DETR, into a video-based mode by adding a temporal aggregation module. All three video models were trained and compared against the single-frame baselines under identical evaluation protocols.
+
+\subsection{Image-to-Video Data Bridging}
+
+To test whether abundant single-frame annotations can improve video-based training (Gap~1), we augmented our primary video dataset with frames from the ARCADE challenge dataset and evaluated the effect on detection quality. This experiment provides empirical evidence on the feasibility and value of bridging image-level and video-level data.
+
+\subsection{External Validation and Domain Shift}
+
+To address the generalizability concerns raised in Gap~3, we introduced an additional external dataset collected from a different institution and imaging system. All models are evaluated on this external set alongside the primary test split, allowing us to measure cross-domain robustness and quantify the domain shift gap.
+
+\subsection{Temporal Consistency Analysis}
+
+Finally, we assessed the practical benefit of temporal models beyond aggregate detection metrics. Specifically, we measured detection flickering-the rate at which predictions appear and disappear across consecutive frames-to evaluate how well video-based models maintain temporally consistent outputs compared to frame-by-frame inference.
+
+\bibliographystyle{plain}
+\bibliography{stenosis}
+
+\end{document}

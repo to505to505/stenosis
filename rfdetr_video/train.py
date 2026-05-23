@@ -32,7 +32,7 @@ from rfdetr.utilities.dynamic_batch_resize import (
 os.environ["WANDB_CONSOLE"] = "off"
 os.environ["WANDB_SILENT"] = "true"
 
-from .config import Config, resolve_distill_frame_indices
+from .config import Config, apply_adapt_mode, resolve_distill_frame_indices
 from .dataset import get_video_dataloader
 from .model import VideoRFDETR, build_criterion
 from .evaluate import evaluate
@@ -214,6 +214,13 @@ def train(cfg: Config):
         f"[Video] etf_enabled={cfg.etf_enabled} "
         f"consistency_enabled={cfg.consistency_enabled}"
     )
+    if cfg.adapt_mode != "full":
+        print(
+            f"[Adapt] mode={cfg.adapt_mode}: backbone+decoder+heads frozen; "
+            f"ETF/KD/CRRCD/consistency disabled. "
+            f"postnet_enabled={cfg.postnet_enabled}, "
+            f"prompt_enabled={cfg.prompt_enabled}."
+        )
     dynamic_resize_config = _dynamic_batch_resize_config(cfg)
     if dynamic_resize_config is not None:
         print(
@@ -643,6 +650,21 @@ def parse_args():
     p.add_argument("--dynamic-batch-resize-max-size", type=int, default=None)
     p.add_argument("--dynamic-batch-resize-step", type=int, default=None)
     p.add_argument("--dynamic-batch-resize-p", type=float, default=None)
+
+    # Parameter-efficient temporal adapters — alternatives to ETF+KD.
+    # When --adapt-mode is "postnet" or "prompt", the 2-D detector is fully
+    # frozen and ETF / KD / CRRCD / consistency are auto-disabled.
+    p.add_argument(
+        "--adapt-mode", type=str, default=None,
+        choices=["full", "postnet", "prompt"],
+        help="Adaptation mode: full (default), postnet (Post-Network Tuning), "
+             "or prompt (Prompt Tuning).",
+    )
+    p.add_argument("--postnet-heads", type=int, default=None)
+    p.add_argument("--postnet-layers", type=int, default=None)
+    p.add_argument("--postnet-dropout", type=float, default=None)
+    p.add_argument("--prompt-num-prompts", type=int, default=None)
+    p.add_argument("--prompt-init-std", type=float, default=None)
     return p.parse_args()
 
 
@@ -718,5 +740,12 @@ if __name__ == "__main__":
     _maybe(cfg_kwargs, "dynamic_batch_resize_max_size", args.dynamic_batch_resize_max_size, int)
     _maybe(cfg_kwargs, "dynamic_batch_resize_step", args.dynamic_batch_resize_step, int)
     _maybe(cfg_kwargs, "dynamic_batch_resize_p", args.dynamic_batch_resize_p, float)
+    _maybe(cfg_kwargs, "adapt_mode", args.adapt_mode, str)
+    _maybe(cfg_kwargs, "postnet_heads", args.postnet_heads, int)
+    _maybe(cfg_kwargs, "postnet_layers", args.postnet_layers, int)
+    _maybe(cfg_kwargs, "postnet_dropout", args.postnet_dropout, float)
+    _maybe(cfg_kwargs, "prompt_num_prompts", args.prompt_num_prompts, int)
+    _maybe(cfg_kwargs, "prompt_init_std", args.prompt_init_std, float)
     cfg = Config(**cfg_kwargs)
+    cfg = apply_adapt_mode(cfg)
     train(cfg)

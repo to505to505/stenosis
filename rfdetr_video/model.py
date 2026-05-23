@@ -23,6 +23,8 @@ from rfdetr.models.lwdetr import build_model_from_config, build_criterion_from_c
 from rfdetr.utilities.tensors import nested_tensor_from_tensor_list
 
 from .config import Config
+from .postnet import TemporalPostNet
+from .prompt import TemporalPromptBank
 
 
 class EarlyTemporalFusion(nn.Module):
@@ -164,12 +166,16 @@ def build_criterion(cfg: Config):
     return criterion, postprocessors
 
 
+_NEW_PREFIXES = ("etf", "crrcd", "postnet", "prompt_bank")
+
+
 def _param_group_for(name: str) -> str:
     """Classify a parameter name into an LR group: backbone / new / pretrained."""
     if name.startswith("backbone"):
         return "backbone"
-    if name.startswith("etf") or name.startswith("crrcd"):
-        return "new"
+    for prefix in _NEW_PREFIXES:
+        if name.startswith(prefix):
+            return "new"
     return "pretrained"
 
 
@@ -207,6 +213,19 @@ class VideoRFDETR(nn.Module):
                 param.requires_grad = False
             for param in self.bbox_embed.parameters():
                 param.requires_grad = False
+        # In the parameter-efficient adapt modes we additionally freeze the
+        # learned query priors (refpoint + query content embeddings) — they
+        # belong to the 2-D detector that the alternatives must not touch.
+        if cfg.adapt_mode != "full":
+            for param in self.refpoint_embed.parameters():
+                param.requires_grad = False
+            for param in self.query_feat.parameters():
+                param.requires_grad = False
+            if self.two_stage:
+                for param in self.transformer.enc_out_bbox_embed.parameters():
+                    param.requires_grad = False
+                for param in self.transformer.enc_out_class_embed.parameters():
+                    param.requires_grad = False
 
         if cfg.etf_enabled:
             self.etf: Optional[EarlyTemporalFusion] = EarlyTemporalFusion(
@@ -217,6 +236,35 @@ class VideoRFDETR(nn.Module):
             )
         else:
             self.etf = None
+
+        if cfg.postnet_enabled:
+            self.postnet: Optional[TemporalPostNet] = TemporalPostNet(
+                d_model=cfg.hidden_dim,
+                n_heads=cfg.postnet_heads,
+                dropout=cfg.postnet_dropout,
+                n_layers=cfg.postnet_layers,
+            )
+        else:
+            self.postnet = None
+
+        if cfg.prompt_enabled:
+            if int(cfg.prompt_num_prompts) > int(self.num_queries):
+                raise ValueError(
+                    f"prompt_num_prompts={cfg.prompt_num_prompts} exceeds "
+                    f"num_queries={self.num_queries}; prompts are added to "
+                    f"the first N rows of the decoder tgt.",
+                )
+            # The RF-DETR backbone projector outputs ``hidden_dim`` channels
+            # (see :class:`rfdetr.models.backbone.Backbone`), so the prompt
+            # bank's frame-context projector is a Linear(D, D).
+            self.prompt_bank: Optional[TemporalPromptBank] = TemporalPromptBank(
+                n_prompts=int(cfg.prompt_num_prompts),
+                d_model=int(cfg.hidden_dim),
+                feat_channels=int(cfg.hidden_dim),
+                init_std=float(cfg.prompt_init_std),
+            )
+        else:
+            self.prompt_bank = None
 
         self._has_teacher_queries: bool = False
         self.register_buffer("teacher_refpoint", torch.zeros(1, 4), persistent=False)
@@ -230,6 +278,21 @@ class VideoRFDETR(nn.Module):
             injected = self._inject_decoder_inputs
             if injected is None:
                 return None
+            if "tgt_add" in injected:
+                # Prompt-tuning mode: ADD prompts to the first N rows of the
+                # existing decoder tgt; leave refpoints untouched.
+                existing_tgt = args[0]
+                tgt_add = injected["tgt_add"]
+                n = tgt_add.shape[-2]
+                if existing_tgt.shape[-2] < n:
+                    raise RuntimeError(
+                        f"decoder tgt has {existing_tgt.shape[-2]} query slots "
+                        f"but prompt_num_prompts={n}",
+                    )
+                new_tgt = existing_tgt.clone()
+                new_tgt[..., :n, :] = new_tgt[..., :n, :] + tgt_add
+                new_args = (new_tgt, *args[1:])
+                return new_args, kwargs
             new_args = (injected["tgt"], *args[1:])
             new_kwargs = dict(kwargs)
             new_kwargs["refpoints_unsigmoid"] = injected["refpoints"]
@@ -387,6 +450,17 @@ class VideoRFDETR(nn.Module):
                 "tgt": decoder_inputs["tgt"].detach(),
                 "refpoints": decoder_inputs["refpoints"].detach(),
             }
+        elif (
+            self.prompt_bank is not None
+            and query_mode == "student"
+        ):
+            # Per-frame prompt propagation. Pads to Q with zeros so the
+            # additive injection touches only the first n_prompts rows.
+            P_btnd = self.prompt_bank(srcs, B, T)  # (B, T, N, D)
+            N = P_btnd.shape[2]
+            D = P_btnd.shape[3]
+            tgt_add = P_btnd.reshape(B * T, N, D)
+            self._inject_decoder_inputs = {"tgt_add": tgt_add}
 
         try:
             hs, ref_unsigmoid, hs_enc, ref_enc = self.transformer(
@@ -406,6 +480,23 @@ class VideoRFDETR(nn.Module):
             }
             if self.aux_loss:
                 out["aux_outputs"] = self._aux_outputs(stacked_class, stacked_coord)
+            if (
+                self.postnet is not None
+                and query_mode == "student"
+            ):
+                # Late temporal modeling: refine the final hidden state via a
+                # learnable temporal self-attention, then re-apply the
+                # (frozen) class/bbox heads with the same final refpoints.
+                hs_refined = self.postnet(hs[-1], B, T)
+                refined_class, refined_coord = self._heads(
+                    hs_refined, ref_unsigmoid[-1],
+                )
+                out["pred_logits"] = refined_class
+                out["pred_boxes"] = refined_coord
+                # Aux outputs come from the frozen intermediate layers and
+                # do not benefit from the post-net — drop them to keep the
+                # criterion focused on the refined predictions.
+                out.pop("aux_outputs", None)
 
         if self.two_stage and hs_enc is not None:
             if query_mode == "student":
@@ -455,8 +546,16 @@ class VideoRFDETR(nn.Module):
             f"[param groups] pretrained={len(buckets['pretrained'])} "
             f"new={len(buckets['new'])} backbone={len(buckets['backbone'])}"
         )
-        assert buckets["pretrained"], (
-            "no pretrained-detector params found — check _param_group_for prefixes"
+        # In adapt_mode={postnet,prompt} the entire 2-D detector is frozen,
+        # so the only trainable group is "new". The assertion below only
+        # fires in adapt_mode=full, where having no pretrained-detector
+        # params would indicate a real prefix-classification bug.
+        if self.cfg.adapt_mode == "full":
+            assert buckets["pretrained"], (
+                "no pretrained-detector params found — check _param_group_for prefixes"
+            )
+        assert buckets["new"] or buckets["pretrained"] or buckets["backbone"], (
+            "no trainable parameters at all — model is fully frozen"
         )
         groups = []
         if buckets["pretrained"]:

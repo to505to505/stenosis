@@ -1,0 +1,22 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "torch": "2.10.0+cu128",
+  "cuda": "12.8",
+  "T": 5,
+  "img_size": 512,
+  "params_M": 32.054628,
+  "amp": {
+    "latency_ms_mean": 34.72652232157998,
+    "latency_ms_std": 1.2657563856194327,
+    "latency_ms_min": 33.631158992648125,
+    "latency_ms_p95": 36.42752011073753,
+    "fps": 28.796433767241172
+  },
+  "fp32": {
+    "latency_ms_mean": 61.23304646316683,
+    "latency_ms_std": 1.6951885445325137,
+    "latency_ms_min": 58.38465300621465,
+    "latency_ms_p95": 63.7331190315308,
+    "fps": 16.331050923646668
+  }
+}

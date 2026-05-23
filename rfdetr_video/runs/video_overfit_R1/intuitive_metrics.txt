@@ -1,0 +1,88 @@
+Intuitive metrics – video_overfit_R1
+Run dir: /home/dsa/stenosis/rfdetr_video/runs/video_overfit_R1
+Match IoU (frame & track) = 0.3, link IoU (track build) = 0.3
+================================================================================
+Dataset : cadica_50plus_new
+  Coverage      : 160 videos, 1614 centre frames, 2284 GT boxes
+  AP@0.3        : 0.4161
+  AP@0.5        : 0.1111
+  Best-F1 sweep @ IoU=0.3:
+    F1=0.4703  P=0.6089  R=0.3831  score_thr=0.470
+    TP=875  FP=562  FN=1409
+  Fixed score threshold @ IoU=0.3:
+    thr=0.20  P=0.5576  R=0.3940  F1=0.4618  (TP=900  FP=714  FN=1384)  mean TP IoU=0.505
+    thr=0.30  P=0.5576  R=0.3940  F1=0.4618  (TP=900  FP=714  FN=1384)  mean TP IoU=0.505
+    thr=0.50  P=0.6485  R=0.3595  F1=0.4625  (TP=821  FP=445  FN=1463)  mean TP IoU=0.507
+    thr=0.70  P=0.8359  R=0.1182  F1=0.2071  (TP=270  FP=53  FN=2014)  mean TP IoU=0.508
+  Macro per-video F1 @ IoU=0.3: 0.5437
+  Videos with >=1 correct det : 159/160
+  Track-level (score thr = best-F1 = 0.470, match IoU=0.3):
+    Total GT tracks (stenosis instances) : 795
+    Tracks ever detected (>=1 hit)        : 327  (41.13%)
+    Tracks well-detected (>=50% frames)   : 288  (36.23%)
+    Tracks excellently-detected (>=80%)   : 234  (29.43%)
+    Tracks completely missed              : 468  (58.87%)
+    Mean per-track recall                 : 0.3453
+    Mean longest-streak ratio per track   : 0.3345
+    Mean fragmentations per track         : 0.0654
+  Track-level (fixed thr = 0.20, match IoU=0.3):
+    Total GT tracks                       : 795
+    Tracks ever detected (>=1 hit)        : 337  (42.39%)
+    Tracks well-detected (>=50% frames)   : 297  (37.36%)
+    Tracks excellently-detected (>=80%)   : 242  (30.44%)
+    Tracks completely missed              : 458  (57.61%)
+    Mean per-track recall                 : 0.3562
+    Mean longest-streak ratio per track   : 0.3452
+    Mean fragmentations per track         : 0.0679
+  Track-level (fixed thr = 0.30, match IoU=0.3):
+    Total GT tracks                       : 795
+    Tracks ever detected (>=1 hit)        : 337  (42.39%)
+    Tracks well-detected (>=50% frames)   : 297  (37.36%)
+    Tracks excellently-detected (>=80%)   : 242  (30.44%)
+    Tracks completely missed              : 458  (57.61%)
+    Mean per-track recall                 : 0.3562
+    Mean longest-streak ratio per track   : 0.3452
+    Mean fragmentations per track         : 0.0679
+--------------------------------------------------------------------------------
+Dataset : dataset2_split_test
+  Coverage      : 31 videos, 1128 centre frames, 1128 GT boxes
+  AP@0.3        : 0.5813
+  AP@0.5        : 0.2473
+  Best-F1 sweep @ IoU=0.3:
+    F1=0.5971  P=0.7103  R=0.5151  score_thr=0.520
+    TP=581  FP=237  FN=547
+  Fixed score threshold @ IoU=0.3:
+    thr=0.20  P=0.5612  R=0.5612  F1=0.5612  (TP=633  FP=495  FN=495)  mean TP IoU=0.544
+    thr=0.30  P=0.5612  R=0.5612  F1=0.5612  (TP=633  FP=495  FN=495)  mean TP IoU=0.544
+    thr=0.50  P=0.6769  R=0.5275  F1=0.5929  (TP=595  FP=284  FN=533)  mean TP IoU=0.544
+    thr=0.70  P=0.8411  R=0.2394  F1=0.3727  (TP=270  FP=51  FN=858)  mean TP IoU=0.604
+  Macro per-video F1 @ IoU=0.3: 0.6057
+  Videos with >=1 correct det : 31/31
+  Track-level (score thr = best-F1 = 0.520, match IoU=0.3):
+    Total GT tracks (stenosis instances) : 176
+    Tracks ever detected (>=1 hit)        : 104  (59.09%)
+    Tracks well-detected (>=50% frames)   : 91  (51.70%)
+    Tracks excellently-detected (>=80%)   : 74  (42.05%)
+    Tracks completely missed              : 72  (40.91%)
+    Mean per-track recall                 : 0.4926
+    Mean longest-streak ratio per track   : 0.4727
+    Mean fragmentations per track         : 0.2557
+  Track-level (fixed thr = 0.20, match IoU=0.3):
+    Total GT tracks                       : 176
+    Tracks ever detected (>=1 hit)        : 116  (65.91%)
+    Tracks well-detected (>=50% frames)   : 99  (56.25%)
+    Tracks excellently-detected (>=80%)   : 82  (46.59%)
+    Tracks completely missed              : 60  (34.09%)
+    Mean per-track recall                 : 0.5393
+    Mean longest-streak ratio per track   : 0.5121
+    Mean fragmentations per track         : 0.3182
+  Track-level (fixed thr = 0.30, match IoU=0.3):
+    Total GT tracks                       : 176
+    Tracks ever detected (>=1 hit)        : 116  (65.91%)
+    Tracks well-detected (>=50% frames)   : 99  (56.25%)
+    Tracks excellently-detected (>=80%)   : 82  (46.59%)
+    Tracks completely missed              : 60  (34.09%)
+    Mean per-track recall                 : 0.5393
+    Mean longest-streak ratio per track   : 0.5121
+    Mean fragmentations per track         : 0.3182
+--------------------------------------------------------------------------------

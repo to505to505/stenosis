@@ -1,0 +1,84 @@
+Stenosis-DetNet Best Results
+========================================
+
+Best mAP30:    0.14967
+Best mAP50:    0.08418
+Best epoch:    18
+
+--- Metrics ---
+AP@0.3                               0.14966908720060426
+AP@0.5                               0.08417848869018502
+F1                                   0.17386018237082068
+best_conf                            0.62
+n_windows                            1126.0
+precision                            0.27552986512524086
+recall                               0.1269982238010657
+sca/AP@0.3                           0.1470885103290161
+sca/AP@0.5                           0.0831494581793858
+sca/F1                               0.17329376854599404
+sca/best_conf                        0.5700000000000001
+sca/n_windows                        1126.0
+sca/precision                        0.26118067978533094
+sca/recall                           0.12966252220248667
+sel_smoothed                         0.138470990543482
+
+--- Config ---
+T                                    5
+amp                                  True
+backbone_out_channels                256
+batch_size                           2
+box_batch_size_per_image             128
+box_bg_iou_thresh                    0.5
+box_detections_per_img               100
+box_fg_iou_thresh                    0.5
+box_nms_thresh                       0.5
+box_positive_fraction                0.25
+box_score_thresh                     0.05
+data_root                            data/dataset2_split
+early_stop_enabled                   True
+early_stop_min_delta                 0.0
+early_stop_patience                  6
+ema_decay                            0.999
+ema_enabled                          True
+epochs                               60
+eval_interval                        2
+grad_accum_steps                     8
+grad_clip_max_norm                   10.0
+img_size                             512
+log_interval                         50
+lr                                   0.02
+lr_backbone_mult                     0.1
+lr_gamma                             0.1
+lr_schedule                          cosine
+lr_step_milestones                   (40, 50)
+momentum                             0.9
+num_classes                          1
+num_workers                          4
+output_dir                           detnet/runs
+pixel_mean                           (0.485, 0.456, 0.406)
+pixel_std                            (0.229, 0.224, 0.225)
+pretrained_coco                      True
+roi_size                             7
+rpn_post_nms_top_n_test              400
+rpn_post_nms_top_n_train             1000
+rpn_pre_nms_top_n_test               1000
+rpn_pre_nms_top_n_train              2000
+run_name                             detnet_v1_T5
+sca_enabled_eval                     True
+sca_interpolate_missing              True
+sca_t_distance                       50.0
+sca_t_frame                          3
+sca_t_iou                            0.2
+sca_t_sim                            0.5
+seed                                 42
+selection_smooth_k                   3
+selection_weights                    (0.5, 0.3, 0.2)
+sff_dropout                          0.0
+sff_heads                            8
+sff_token_dim                        512
+sff_use_residual_concat              True
+supervise_all_frames                 True
+wandb_enabled                        True
+wandb_project                        detnet
+warmup_iters                         500
+weight_decay                         0.0001

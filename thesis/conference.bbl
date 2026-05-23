@@ -1,0 +1,63 @@
+\begin{thebibliography}{10}
+
+\bibitem{popov2022reviewmodernapproachescoronary}
+M.~Popov, T.~Aimyshev, E.~Ismailov, A.~Bulegenov, and S.~Fazli, ``A review of modern approaches for coronary angiography imaging analysis,'' 2022.
+
+\bibitem{zir1976interobserver}
+L.~M. Zir, S.~W. Miller, R.~E. Dinsmore, J.~P. Gilbert, and J.~W. Harthorne, ``Interobserver variability in coronary angiography,'' {\em Circulation}, vol.~53, no.~4, pp.~627--632, 1976.
+
+\bibitem{cardiovascular}
+H.~Ren, F.~Jing, Y.~Fang, and W.~Cheng, ``Artificial intelligence techniques for cardiovascular disease diagnosis via x-ray sensor-based coronary angiography: A bibliometric and systematic review,'' {\em DIGITAL HEALTH}, vol.~12, p.~20552076261417142, 2026.
+
+\bibitem{MOON2021105819}
+J.~H. Moon, D.~Y. Lee, W.~C. Cha, M.~J. Chung, K.-S. Lee, B.~H. Cho, and J.~H. Choi, ``Automatic stenosis recognition from coronary angiography using convolutional neural networks,'' {\em Computer Methods and Programs in Biomedicine}, vol.~198, p.~105819, 2021.
+
+\bibitem{Danilov2021}
+V.~V. Danilov, K.~Y. Klyshnikov, O.~M. Gerget, {\em et~al.}, ``Real-time coronary artery stenosis detection based on modern neural networks,'' {\em Scientific Reports}, vol.~11, p.~7582, Apr 2021.
+
+\bibitem{attentionstenosis}
+P.~V. Stralen, D.~L. Rodrigues, A.~L. Oliveira, M.~N. Menezes, and F.~J. Pinto, ``Stenosis detection in x-ray coronary angiography with deep neural networks leveraged by attention mechanisms,'' in {\em Proceedings of the 9th International Conference on Bioinformatics Research and Applications}, ICBRA '22, (New York, NY, USA), p.~123–128, Association for Computing Machinery, 2023.
+
+\bibitem{aipoweredrealtime}
+K.-T. Tang, J.-Y. Shih, P.~Hsu, C.-T. Liao, I.-M. Chiu, Z.-C. Chen, H.-L. Huang, L.-C. Yang, C.~Liu, J.~Wang, C.-H. Chang, J.-S. Huang, Y.-H. Hsu, M.-C. Tsai, N.-L. Chen, S.-H. Huang, K.-S. Chen, and W.-T. Chang, ``Artificial intelligence powered real-time coronary stenosis recognition and quantification in angiography,'' {\em Journal of Imaging Informatics in Medicine}, 06 2025.
+
+\bibitem{choudhary2026odysseiopensourceendtoendframework}
+A.~Choudhary, X.~Sun, T.~Mahendiran, O.~Senouf, D.~Auberson, B.~D. Bruyne, S.~Fournier, O.~Muller, E.~Abbé, P.~Frossard, and D.~Thanou, ``Odyssei: An open-source end-to-end framework for automated detection, segmentation, and severity estimation of lesions in invasive coronary angiography images,'' 2026.
+
+\bibitem{fvcm}
+C.~Cong, Y.~Kato, H.~D.~D. Vasconcellos, M.~R. Ostovaneh, J.~A.~C. Lima, and B.~Ambale-Venkatesh, ``Deep learning-based end-to-end automated stenosis classification and localization on catheter coronary angiography,'' {\em Frontiers in Cardiovascular Medicine}, vol.~Volume 10 - 2023, 2023.
+
+\bibitem{PANG2021101900}
+K.~Pang, D.~Ai, H.~Fang, J.~Fan, H.~Song, and J.~Yang, ``Stenosis-detnet: Sequence consistency-based stenosis detection for x-ray coronary angiography,'' {\em Computerized Medical Imaging and Graphics}, vol.~89, p.~101900, 2021.
+
+\bibitem{HAN2023106546}
+T.~Han, D.~Ai, X.~Li, J.~Fan, H.~Song, Y.~Wang, and J.~Yang, ``Coronary artery stenosis detection via proposal-shifted spatial-temporal transformer in x-ray angiography,'' {\em Computers in Biology and Medicine}, vol.~153, p.~106546, 2023.
+
+\bibitem{STQD-Det}
+X.~Li, D.~Ai, H.~Song, J.~Fan, T.~Fu, D.~Xiao, Y.~Wang, and J.~Yang, ``Stqd-det: Spatio-temporal quantum diffusion model for real-time coronary stenosis detection in x-ray angiography,'' {\em IEEE Transactions on Pattern Analysis and Machine Intelligence}, vol.~46, no.~12, pp.~9908--9920, 2024.
+
+\bibitem{li2025ltyolo}
+J.~Li, X.~Tang, and X.~Wang, ``Lt-yolo: long-term temporal enhanced yolo for stenosis detection on invasive coronary angiography,'' {\em Frontiers in Molecular Biosciences}, vol.~12, p.~1558495, 2025.
+
+\bibitem{huang2026vasomim}
+D.-X. Huang, C.~Yu, X.-H. Zhou, T.-Y. Xiang, Q.-Y. Zhang, M.-J. Gui, R.-Z. Ma, C.-Y. Wang, N.-F. Xiao, F.~Wang, and Z.-G. Hou, ``Vascular anatomy-aware self-supervised pre-training for x-ray angiogram analysis,'' {\em arXiv preprint arXiv:2602.11536v1}, 2026.
+
+\bibitem{popov2024arcade}
+M.~Popov, A.~Amanturdieva, N.~Zhaksylyk, {\em et~al.}, ``Dataset for automatic region-based coronary artery disease diagnostics using x-ray angiography images,'' {\em Scientific Data}, vol.~11, p.~20, 2024.
+
+\bibitem{li2025imagetovideo}
+J.~Li, C.~Tan, H.~Chen, J.~Ma, J.-F. Hu, J.~Lai, and W.-S. Zheng, ``Image to video transfer learning,'' 2025.
+
+\bibitem{ZHAO2021104667}
+C.~Zhao, A.~Vij, S.~Malhotra, J.~Tang, H.~Tang, D.~Pienta, Z.~Xu, and W.~Zhou, ``Automatic extraction and stenosis evaluation of coronary arteries in invasive coronary angiograms,'' {\em Computers in Biology and Medicine}, vol.~136, p.~104667, 2021.
+
+\bibitem{menezes2023}
+M.~Nobre~Menezes, J.~L. Silva, B.~Silva, T.~Rodrigues, C.~Guerreiro, J.~P. Guedes, M.~O. Santos, A.~L. Oliveira, and F.~J. Pinto, ``Coronary x-ray angiography segmentation using artificial intelligence: a multicentric validation study of a deep learning model,'' {\em The International Journal of Cardiovascular Imaging}, vol.~39, no.~7, pp.~1385--1396, 2023.
+
+\bibitem{molenar}
+M.~A. Molenaar, E.~Hebbo, J.~L. Selder, N.~Shekiladze, P.~B. Sandesara, W.~J. Nicholson, F.~W. Asselbergs, S.~Ahmad, D.~A. Gold, S.~M. Sakr, J.~O. Bescós, V.~Auvray, M.~S. van Mourik, A.~Haak, Y.~Zhao, J.~D. Nieuwendijk, M.~J. Schuuring, B.~J. Bouma, S.~A. Chamuleau, and N.~J. Verouden, ``Deep learning–based segmentation of coronary arteries and stenosis detection in x-ray coronary angiography,'' {\em JACC: Advances}, vol.~4, no.~12\_Part\_2, p.~102360, 2025.
+
+\bibitem{jimenezpartinen2024cadica}
+A.~Jim{\'e}nez-Partinen, M.~A. Molina-Cabello, K.~Thurnhofer-Hemsi, E.~J. Palomo, J.~Rodr{\'i}guez-Capit{\'a}n, A.~I. Molina-Ramos, and M.~Jim{\'e}nez-Navarro, ``Cadica: a new dataset for coronary artery disease detection by using invasive coronary angiography,'' {\em arXiv preprint arXiv:2402.00570}, 2024.
+
+\end{thebibliography}
